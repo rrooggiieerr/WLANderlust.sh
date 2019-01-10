@@ -147,7 +147,7 @@ country=US
 
 network={
 	ssid="$SSID"
-	psk="$PSK"
+	psk=$PSK
 }
 EOF
 

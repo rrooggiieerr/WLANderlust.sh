@@ -1,0 +1,27 @@
+# WLANderlust
+#
+# PPTP VPN script
+#
+# https://en.wikipedia.org/wiki/Point-to-Point_Tunneling_Protocol
+#
+# Rogier van Staveren, January 2019, placeholder for future implementation
+
+VPNNAME='PPTP'
+
+HASCONFIG='false'
+ISCONFIGURED='false'
+
+case "$1" in
+	'CONFIGURE')
+		return 0
+		;;
+	'START')
+		return 1
+		;;
+	'STOP')
+		return 0
+		;;
+	'STATE')
+		return 1
+		;;
+esac

@@ -1,0 +1,18 @@
+# WLANderlust
+#
+# Rogier van Staveren, January 2019, initial release
+
+case "$1" in
+	'START')
+		# Flush existing forward rules
+		iptables -F FORWARD
+		# Flush existing NAT rules
+		iptables -t nat -F POSTROUTING
+		return 0
+		;;
+	'STOP')
+		# Flush existing forward rules
+		iptables -F FORWARD
+		return 0
+		;;
+esac

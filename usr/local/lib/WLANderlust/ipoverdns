@@ -1,0 +1,302 @@
+# WLANderlust
+#
+# IP over DNS tunneling functions
+#
+# Rogier van Staveren, January 2019, initial release
+
+IODINEPID="/var/run/iodine.$INTERFACE.pid"
+ 
+# Append default IP over DNS tunneling configuration to default configuration
+if ! grep -q "^# IP over DNS tunneling configuration" <<< "$DEFAULTCONFIG"; then
+	DEFAULTCONFIG="$DEFAULTCONFIG
+
+# IP over DNS tunneling configuration
+AUTOSTARTIPOVERDNS='false'
+IODINETOPDOMAIN=''
+IODINE_PASS=''"
+fi
+
+[ -z "$IODINETOPDOMAIN" ] && IODINETOPDOMAIN=`getConfigValue 'IODINETOPDOMAIN'`
+[ -z "$IODINE_PASS" ] && IODINE_PASS=`getConfigValue 'IODINE_PASS'`
+
+IPOVERDNSSTATE=`getState 'IPOVERDNSSTATE'`
+IPOVERDNSINTERFACE=`getState 'IPOVERDNSINTERFACE'`
+IPOVERDNSSERVER=`getState 'IPOVERDNSSERVER'`
+IPOVERDNSSERVERIPADDRESS=`getState 'IPOVERDNSSERVERIPADDRESS'`
+IPOVERDNSMODE=`getState 'IPOVERDNSMODE'`
+IPOVERDNSIPADDRESS=`getState 'IPOVERDNSIPADDRESS'`
+IPOVERDNSNETMASK=`getState 'IPOVERDNSNETMASK'`
+IPOVERDNSGATEWAY=`getState 'IPOVERDNSGATEWAY'`
+
+case "$1" in
+	'CONFIGURE')
+		echo
+		echo
+		echo 'IP over DNS tunneling configuration'
+		echo 'Tunneling IP over DNS can be usable in situations where internet access is'
+		echo 'obstructed, but DNS queries are allowed.'
+		echo
+		read -p 'DNS top domain: ' -e -i "$IODINETOPDOMAIN" 'IODINETOPDOMAIN'
+		readPassword 'Password: '
+		[ ! -z "$PASSWORD" ] &&
+			IODINE_PASS="$PASSWORD"
+		setConfigValue 'AUTOSTARTIPOVERDNS' 'false'
+		setConfigValue 'IODINETOPDOMAIN' "$IODINETOPDOMAIN"
+		setConfigValue 'IODINE_PASS' "$IODINE_PASS"
+		storeConfig
+		return 0
+		;;
+	'START')
+		if [ "$IPOVERDNSSTATE" = 'started' ] && [ -f "$IODINEPID" ]; then
+			logMessage 'IP over DNS tunneling is already active'
+			return 0
+		elif ([ "$CAPTIVEPORTALSTATE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]) && ! $FORCE ; then
+			logMessage 'Starting IP over DNS tunneling not needed'
+			return 0
+		elif [ ! -x '/usr/sbin/iodine' ]; then
+			logError 'Iodine is not installed'
+			return 1
+		elif [ -z "$IODINETOPDOMAIN" ] || [ -z "$IODINE_PASS" ]; then
+			logError 'Iodine is not configured'
+			return 1
+		elif [ "$IPOVERDNSSTATE" != 'stopped' ]; then
+			logError 'IP over DNS tunnel is not stopped'
+			return 1
+		elif [ -f "$IODINEPID" ]; then
+			logError 'IP over DNS tunnel seems to be active'
+			setState 'IPOVERDNSSTATE' 'failure'
+			storeState
+			return 1
+		fi
+
+		logMessage 'Starting IP over DNS tunneling'
+
+		setState 'IPOVERDNSSERVER' `host -t NS "$IODINETOPDOMAIN" | sed -n 's|^.* \([^ ]*\)\.$|\1|p' | head -n 1`
+		$DEBUGLOGGING && logMessage "IPOVERDNSSERVER=$IPOVERDNSSERVER"
+
+		setState 'IPOVERDNSSERVERIPADDRESS' `host -t A "$IPOVERDNSSERVER" | awk '{print $4}' | head -n 1`
+		$DEBUGLOGGING && logMessage "IPOVERDNSSERVERIPADDRESS=$IPOVERDNSSERVERIPADDRESS"
+
+		if DNSSERVERIPADDRESS=`sed -n 's|^nameserver *\([^ ]*\)$|\1|p' /var/run/dnsmasq/resolv.conf | tail -n 1` &&
+			[ ! -z "$DNSSERVERIPADDRESS" ] &&
+			IODINEOUTPUT=`/usr/sbin/iodine -u iodine -F "$IODINEPID" -P "$IODINE_PASS" "$DNSSERVERIPADDRESS" "$IODINETOPDOMAIN" 2>&1`; then
+			logMessage 'IP over DNS tunneling started'
+			$DEBUGLOGGING && logMessage "$IODINEOUTPUT"
+		else
+			logError 'Failed to start IP over DNS tunneling'
+			$DEBUGLOGGING && logMessage "$IODINEOUTPUT"
+			setState 'IPOVERDNSSTATE' 'failure'
+			storeState
+			return 1
+		fi
+
+		#Example iodine output:
+		#IP over DNS tunneling started
+		#Opened dns0
+		#Opened IPv4 UDP socket
+		#Sending DNS queries for v.batoid.net to 192.168.1.1
+		#Autodetecting DNS query type (use -T to override).
+		#Using DNS type NULL queries
+		#Version ok, both using protocol v 0x00000502. You are user #0
+		#Setting IP of dns0 to 192.168.245.2
+		#Setting MTU of dns0 to 1130
+		#Server tunnel IP is 192.168.245.1
+		#Testing raw UDP data to the server (skip with -r)
+		#Server is at 81.204.61.234, trying raw login: OK
+		#Sending raw traffic directly to 81.204.61.234
+		#Connection setup complete, transmitting data.
+		#Detaching from terminal...
+
+		#Opened dns0
+		#Opened IPv4 UDP socket
+		#Sending DNS queries for v.batoid.net to 192.168.1.1
+		#Autodetecting DNS query type (use -T to override).....................
+		#iodine: No suitable DNS query type found. Are you connected to a network?
+		#iodine: If you expect very long roundtrip delays, use -T explicitly.
+		#iodine: (Also, connecting to an "ancient" version of iodined won't work.)
+
+		#Opened dns0
+		#Opened IPv4 UDP socket
+		#Sending DNS queries for v.batoid.net to 192.168.182.1
+		#Autodetecting DNS query type (use -T to override).
+		#Using DNS type NULL queries
+		#Version ok, both using protocol v 0x00000502. You are user #0
+		#Retrying login...
+		#Setting IP of dns0 to 192.168.245.2
+		#Setting MTU of dns0 to 1130
+		#Server tunnel IP is 192.168.245.1
+		#Testing raw UDP data to the server (skip with -r)
+		#Server is at 81.204.61.234, trying raw login: ....failed
+		#Using EDNS0 extension
+		#Switching upstream to codec Base128
+		#Server switched upstream to codec Base128
+		#No alternative downstream codec available, using default (Raw)
+		#Switching to lazy mode for low-latency
+		#Server switched to lazy mode
+		#Autoprobing max downstream fragment size... (skip with -m fragsize)
+		#768 ok.. .1152 ok.. ...1344 not ok.. ...1248 not ok.. ...1200 not ok.. 1176 ok.. 1188 ok.. will use 1188-2=1186
+		#Setting downstream fragment size to max 1186...
+		#Connection setup complete, transmitting data.
+		#Detaching from terminal...
+
+		setState 'IPOVERDNSINTERFACE' `sed -n 's|^Opened \([a-z0-9]*\)$|\1|p' <<< "$IODINEOUTPUT"`
+		setState 'IPOVERDNSIPADDRESS' `sed -n 's|^Setting IP of [a-z0-9]* to \([0-9\.]*\)$|\1|p' <<< "$IODINEOUTPUT"`
+		setState 'IPOVERDNSGATEWAY' `sed -n 's|^Server tunnel IP is \([0-9\.]*\)$|\1|p' <<< "$IODINEOUTPUT"`
+		setState 'IPOVERDNSSERVERIPADDRESS' `sed -n 's|^Server is at \([0-9.]*\), .*$|\1|p' <<< "$IODINEOUTPUT"`
+		$DEBUGLOGGING && logMessage "IPOVERDNSSERVERIPADDRESS=$IPOVERDNSSERVERIPADDRESS"
+		grep -q '^Server is at [0-9.]*, trying raw login: OK$' <<< "$IODINEOUTPUT" &&
+			setState 'IPOVERDNSMODE' 'raw' ||
+			setState 'IPOVERDNSMODE' 'unknown'
+		$DEBUGLOGGING && logMessage "IPOVERDNSMODE=$IPOVERDNSMODE"
+
+		IFCONFIG=`ifconfig "$IPOVERDNSINTERFACE"`
+		# This is just paranoia
+		[ -z "$IPOVERDNSIPADDRESS" ] &&
+			setState 'IPOVERDNSIPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		setState 'IPOVERDNSIPADDRESS' "$IPOVERDNSIPADDRESS"
+		setState 'IPOVERDNSNETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		# This is just paranoia
+		[ -z "$IPOVERDNSGATEWAY" ] &&
+			setState 'IPOVERDNSGATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $IPOVERDNSINTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
+
+		# Check if the remote end of the VPN can be reached
+		if ! ping -I "$IPOVERDNSINTERFACE" -q -c 1 -W "$TIMEOUT" "$IPOVERDNSGATEWAY" > /dev/null 2>&1; then
+			logError 'Unable to reach remote end of IP over DNS tunnel'
+			#setState 'IPOVERDNSSTATE' 'failure'
+			#storeState
+
+			#return 1
+		fi
+
+		# Create a keep-alive thread
+		( while ifconfig "$IPOVERDNSINTERFACE" > /dev/null 2>&1; do
+			 ping -I "$IPOVERDNSINTERFACE" -q -c 1 "$IPOVERDNSGATEWAY" > /dev/null 2>&1
+			sleep 10
+		done ) &
+
+		if [ ! -z "$GATEWAY" ]; then
+			[ "$IPOVERDNSMODE" = 'raw' ] &&
+				ip route add "$IPOVERDNSSERVERIPADDRESS" via "$GATEWAY"
+
+			# Route DNS servers
+			for DNSSERVERIPADDRESS in `sed -n 's|^nameserver *\([^ ]*\)$|\1|p' /var/run/dnsmasq/resolv.conf`; do
+				[ "$DNSSERVERIPADDRESS" != "$GATEWAY" ] &&
+					ip route add "$DNSSERVERIPADDRESS" via "$GATEWAY"
+			done
+		fi
+
+		if [ "$INTERFACE" = "$DEFAULTROUTEINTERFACE" ]; then
+			logMessage 'Route trafic over IP over DNS tunnel'
+			ip route replace default via "$IPOVERDNSGATEWAY"
+			setState 'DEFAULTROUTEINTERFACE' "$IPOVERDNSINTERFACE"
+		fi
+
+		setState 'IPOVERDNSSTATE' 'started'
+		storeState
+
+		return 0
+		;;
+	'STOP')
+		if [ 'IPOVERDNSSTATE' != 'stopped' ] && [ "$VPNSTATE" != 'stopped' ]; then
+			logError 'VPN is not stopped'
+			return 1
+		fi
+
+		[ -z "$IPOVERDNSINTERFACE" ] &&
+			IPOVERDNSINTERFACE=`ifconfig | sed -n 's|^\(dns[0-9]*\): .*$|\1|p'`
+
+		$DEBUGLOGGING && logMessage "$IPOVERDNSINTERFACE  = $DEFAULTROUTEINTERFACE"
+		if [ ! -z "$IPOVERDNSINTERFACE" ] && [ "$IPOVERDNSINTERFACE" = "$DEFAULTROUTEINTERFACE" ]; then
+			logMessage "Route trafic over $INTERFACE"
+			for DNSSERVERIPADDRESS in `sed -n 's|^nameserver *\([^ ]*\)$|\1|p' /var/run/dnsmasq/resolv.conf`; do
+				GATEWAY=`route -n | sed -n "s|^$DNSSERVERIPADDRESS *\([0-9.]*\) .* $INTERFACE|\1|p"`
+				[ ! -z "$GATEWAY" ] && [ "$DNSSERVERIPADDRESS" != "$GATEWAY" ] &&
+					ip route del "$DNSSERVERIPADDRESS" via "$GATEWAY"
+			done
+
+			IPOVERDNSSERVER=`host -t NS "$IODINETOPDOMAIN" | sed -n 's|^.* \([^ ]*\)\.$|\1|p'`
+			$DEBUGLOGGING && logMessage "IPOVERDNSSERVER=$IPOVERDNSSERVER"
+			IPOVERDNSSERVERIPADDRESS=`host -t A "$IPOVERDNSSERVER" | awk '{print $4}'`
+			$DEBUGLOGGING && logMessage "IPOVERDNSSERVERIPADDRESS=$IPOVERDNSSERVERIPADDRESS"
+			[ -z "$GATEWAY" ] &&
+				GATEWAY=`route -n | sed -n "s|^$IPOVERDNSSERVERIPADDRESS *\([0-9.]*\) .* $INTERFACE|\1|p"`
+			[ ! -z "$GATEWAY" ] && [ ! -z "$IPOVERDNSSERVERIPADDRESS" ] &&
+				ip route del "$IPOVERDNSSERVERIPADDRESS" via "$GATEWAY"
+
+			[ ! -z "$GATEWAY" ] && 
+				ip route replace default via "$GATEWAY"
+			setState 'DEFAULTROUTEINTERFACE' "$INTERFACE"
+		fi
+
+		# Stop iodine
+		$VERBOSELOGGING && logMessage 'Stopping IP over DNS tunneling'
+		if [ -f "$IODINEPID" ] && ! ps -p `cat "$IODINEPID"` > /dev/null; then
+			logError 'IP over DNS tunneling process does not exist, iodine probably crashed along the way'
+		elif [ -f "$IODINEPID" ] && ! kill `cat "$IODINEPID"` > /dev/null 2>&1; then
+			logError 'Failed to stop IP over DNS tunneling'
+			setState 'IPOVERDNSSTATE' 'failure'
+			storeState
+			return 1
+		fi
+		rm -f "$IODINEPID"
+
+		logMessage 'IP over DNS tunneling stopped'
+		setState 'IPOVERDNSSTATE' 'stopped'
+		setState 'IPOVERDNSINTERFACE' ''
+		setState 'IPOVERDNSSERVER' ''
+		setState 'IPOVERDNSSERVERIPADDRESS' ''
+		setState 'IPOVERDNSMODE' ''
+		setState 'IPOVERDNSIPADDRESS' ''
+		setState 'IPOVERDNSNETMASK' ''
+		setState 'IPOVERDNSGATEWAY' ''
+		storeState
+
+		return 0
+		;;
+	'STATE')
+		IPOVERDNSSTATE=`getState 'IPOVERDNSSTATE'`
+		IPOVERDNSINTERFACE=`getState 'IPOVERDNSINTERFACE'`
+		IPOVERDNSSERVER=`getState 'IPOVERDNSSERVER'`
+		IPOVERDNSSERVERIPADDRESS=`getState 'IPOVERDNSSERVERIPADDRESS'`
+		IPOVERDNSMODE=`getState 'IPOVERDNSMODE'`
+		IPOVERDNSIPADDRESS=`getState 'IPOVERDNSIPADDRESS'`
+		IPOVERDNSNETMASK=`getState 'IPOVERDNSNETMASK'`
+		IPOVERDNSGATEWAY=`getState 'IPOVERDNSGATEWAY'`
+
+		if [ -z "$IPOVERDNSSTATE" ]; then
+			setState 'IPOVERDNSSTATE' 'stopped'
+			setState 'IPOVERDNSINTERFACE' ''
+			setState 'IPOVERDNSSERVER' ''
+			setState 'IPOVERDNSSERVERIPADDRESS' ''
+			setState 'IPOVERDNSMODE' ''
+			setState 'IPOVERDNSIPADDRESS' ''
+			setState 'IPOVERDNSNETMASK' ''
+			setState 'IPOVERDNSGATEWAY' ''
+		fi
+		 
+		if [ "$IPOVERDNSSTATE" = 'started' ] && [ ! -f "$IODINEPID" ]; then
+			logError 'IP over DNS tunneling PID is not present, this should not happen'
+			setState 'IPOVERDNSSTATE' 'failure'
+		elif [ "$IPOVERDNSSTATE" = 'started' ] && ! ps -p `cat "$IODINEPID"` > /dev/null; then
+			logError 'IP over DNS tunneling process does not exist, iodine probably crashed along the way'
+			setState 'IPOVERDNSSTATE' 'failure'
+		elif [ "$IPOVERDNSSTATE" = 'started' ] && [ -z "$IPOVERDNSINTERFACE" ]; then
+			setState 'IPOVERDNSSTATE' 'failure'
+		elif [ "$IPOVERDNSSTATE" = 'started' ] && ! ifconfig "$IPOVERDNSINTERFACE" > /dev/null 2>&1; then
+			logError 'IP over DNS tunneling interface is not present, iodine probably crashed along the way'
+			setState 'IPOVERDNSSTATE' 'failure'
+		elif [ "$IPOVERDNSSTATE" = 'stopped' ] && [ -f "$IODINEPID" ]; then
+			# There should be no PID file if iodine is stopped
+			setState 'IPOVERDNSSTATE' 'failure'
+		fi
+
+		$DEBUGLOGGING && logMessage "IP over DNS tunneling is $IPOVERDNSSTATE"
+		storeState
+
+		[ "$IPOVERDNSSTATE" = 'started' ] &&
+			return 0
+		return 1
+		;;
+esac
+
+return 1

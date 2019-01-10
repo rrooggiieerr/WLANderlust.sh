@@ -1,0 +1,144 @@
+# WLANderlust
+#
+# This script handles Captive Portal login for Fon accounts
+#
+# Each Fon provider seems to have its own portal with different form elements
+# this means that for each provider the script needs to be extendend for now.
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+# https://fon.com/
+#
+# Rogier van Staveren, January 2019, initial release
+
+case "$1" in
+        'CONFIGURE')
+		#ToDo
+		return 1
+                ;;
+        'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+if grep -q '\.portal\.fon\.com/' <<< "$LOCATION"; then
+	USERNAME=`getCaptivePortalUsername "$BSSID" "$SSID" '.portal.fon.com' '' ''`
+	PASSWORD=`getCaptivePortalPassword "$BSSID" "$SSID" '.portal.fon.com' '' ''`
+
+	# Return if no Fon username or password are configured
+	if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+		CAPTIVEPORTALSTATE="failure"
+		return 1
+	fi
+else
+	return 1
+fi
+
+# URL Encode the Fon username
+USERNAME=`sed 's|@|%40|' <<< $USERNAME`
+if [ "$SSID" = 'KPN Fon' ]; then
+	logMessage 'Connected to FON'
+	CAPTIVEPORTALTYPE='Fon'
+
+	FORMACTION=`sed -n 's|^.*<form id="login"[^>]* action="\([^"]*\)"[^>]*>.*$|\1|Ip' <<< "$BODY"`
+	$DEBUGLOGGING && logMessage "Form action: \"$FORMACTION\""
+
+	if [ ! -z "FORMACTION" ] &&  curlPost "$FORMACTION" "UserName=$USERNAME&Password=$PASSWORD&_rememberMe=on"; then
+		getLocationHeader "$BODY"
+		if [ ! -z "$LOCATION" ]; then
+			$DEBUGLOGGING && logMessage "Redirect location: \"$LOCATION\""
+			getBody "$LOCATION" true
+		fi
+
+		#ToDo validate the right grep
+		if grep -q '<title>KPN | Fon - Success</title>' <<< "$BODY"; then
+			# Ok, we were able to authenticate
+			logMessage 'Captive portal succesfully authenticated'
+			CAPTIVEPORTALSTATE='solved'
+		else
+			logError 'Captive portal still present'
+			CAPTIVEPORTALSTATE="failure"
+		fi
+	else
+		logError "Failed to retrieve \"$LOCATION\""
+		CAPTIVEPORTALSTATE='failure'
+	fi
+elif [ "$SSID" = 'Telekom_FON' ] || [ "$SSID" = 'BT FON' ]; then
+	logMessage 'Connected to FON'
+	CAPTIVEPORTALTYPE='Fon'
+
+	#ToDo Script to auto login
+	logError 'Some smart script not yet implemented'
+
+	CAPTIVEPORTALSTATE="failure"
+
+	return 1
+elif [ "$SSID" = 'OTE WiFi Fon' ] || grep -q 'https://ote\.portal\.fon\.com/' <<< "$LOCATION"; then
+	logMessage 'Connected to FON'
+	CAPTIVEPORTALTYPE='Fon'
+
+	if [ ! -z "$USERNAME" ] && [ ! -z "$PASSWORD" ]; then
+		FORMACTION=`sed -n 's|^.*<form id="loginForm"[^>]* action="\([^"]*\)"[^>]*>.*$|\1|Ip' <<< "$BODY"`
+		$DEBUGLOGGING && logMessage "Form action: \"$FORMACTION\""
+		FORMARGUMENTS="chooseUser=passusers&USERNAME=$USERNAME&PASSWORD=$PASSWORD&remember=on"
+
+		if [ ! -z "FORMACTION" ] && curlPost "$FORMACTION" "$FORMARGUMENTS"; then
+			getLocationHeader "$BODY"
+			if [ ! -z "$LOCATION" ]; then
+				$DEBUGLOGGING && logMessage "Redirect location: \"$LOCATION\""
+				getBody "$LOCATION" true
+			fi
+
+			if grep -q '<title>COSMOTE | Fon - Success</title>' <<< "$BODY"; then
+				# Ok, we were able to authenticate
+				logMessage 'Captive portal succesfully authenticated'
+				CAPTIVEPORTALSTATE="solved"
+				return 0
+			else
+				logError 'Captive portal still present'
+				CAPTIVEPORTALSTATE="failure"
+				return 1
+			fi
+		else
+			logError "Failed to retrieve \"$LOCATION\""
+			CAPTIVEPORTALSTATE='failure'
+			return 1
+		fi
+	#else
+	#	# Go for the free 15 minutes
+	#	# Does not work yet, work in progress
+	#	logMessage "No FON credentials available, we'll s go for the 15 minutes free WiFi instead"
+	#	ACTION=`sed -n 's|^.*<a href="\([^"]*\)"[^>]*>Free WiFi 15 min. trial</a>.*$|\1|p' <<< "$BODY"`
+	#	$DEBUGLOGGING && logMessage "15 minutes free WiFi URL: '$ACTION'"
+	#	if curlGet "$ACTION"; then
+	#		getLocationHeader "$BODY"
+	#		if [ ! -z "$LOCATION" ]; then
+	#			$DEBUGLOGGING && logMessage "Redirect location: \"$LOCATION\""
+	#			getBody "$LOCATION" true
+	#		fi
+	#	fi
+	#
+	#	CAPTIVEPORTALTYPE='Fon'
+	#	CAPTIVEPORTALSTATE='failure'
+	#
+	#	return 1
+	fi
+
+	CAPTIVEPORTALSTATE="failure"
+
+	return 1
+elif grep -q '\.portal\.fon\.com/' <<< "$LOCATION"; then
+	logMessage 'Seems to be connected to FON'
+	CAPTIVEPORTALTYPE='Fon'
+
+	#ToDo Script to auto login
+	logError 'Some smart script not yet implemented'
+
+	CAPTIVEPORTALSTATE="failure"
+
+	return 1
+fi
+
+return 1

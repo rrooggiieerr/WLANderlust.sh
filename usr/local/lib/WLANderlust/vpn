@@ -1,0 +1,274 @@
+# WLANderlust
+#
+# VPN functions
+#
+# Rogier van Staveren, January 2019, initial release
+
+# Append default VPN configuration to default configuration
+if ! grep -q "^# IP over DNS tunneling configuration" <<< "$DEFAULTCONFIG"; then
+	DEFAULTCONFIG="$DEFAULTCONFIG
+
+# VPN Settings
+AUTOSTARTVPN='false'
+VPNTYPE='none'
+SSHTUNNELSERVERHOSTNAME=''
+SSHTUNNELUSERNAME=''"
+fi
+
+[ -z "$VPNTYPE" ] && VPNTYPE=`getConfigValue 'VPNTYPE'`
+
+VPNSTATE=`getState 'VPNSTATE'`
+ACTIVEVPNTYPE=`getState 'ACTIVEVPNTYPE'`
+VPNINTERFACE=`getState 'VPNINTERFACE'`
+VPNIPADDRESS=`getState 'VPNIPADDRESS'`
+VPNNETMASK=`getState 'VPNNETMASK'`
+VPNGATEWAY=`getState 'VPNGATEWAY'`
+
+case "$1" in
+	'CONFIGURE')
+		AUTOSTARTVPN=`getConfigValue 'AUTOSTARTVPN'`
+		while true; do
+			CONFIGURABLEVPNS=()
+			CONFIGUREDVPNS=()
+			for SCRIPTNAME in $(run-parts --list "$LIBPATH/vpn.d"); do
+				HASCONFIG='false'
+				. "$SCRIPTNAME" ''
+				$HASCONFIG &&
+					CONFIGURABLEVPNS+=(`basename "$SCRIPTNAME"`)
+				$ISCONFIGURED &&
+					CONFIGUREDVPNS+=(`basename "$SCRIPTNAME"`)
+			done
+			SCRIPTNAME="$0"
+
+			! $VERBOSELOGGING && clear
+			echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
+			echo 'VPN Configuration Menu'
+			echo
+			for I in ${!CONFIGURABLEVPNS[@]}; do
+				SCRIPTNAME="$LIBPATH/vpn.d/${CONFIGURABLEVPNS[$I]}"
+				VPNNAME=''
+				. "$SCRIPTNAME" ''
+				SCRIPTNAME="$0"
+				echo -e "  \e[1m$I\e[0m Configure $VPNNAME"
+			done
+			SCRIPTNAME="$0"
+			$AUTOSTARTVPN &&
+				echo -e "  \e[1mS\e[0m Don't automatically \e[1ms\e[0mtart VPN connection" ||
+				echo -e '  \e[1mS\e[0m Automatically \e[1ms\e[0mtart VPN connection'
+			echo -e '  \e[1mB\e[0m \e[1mB\e[0mack to main menu'
+			echo
+
+			if read -p 'VPN to configure or option: '; then
+				case "$REPLY" in
+					W|w) editwpa_supplicant ;;
+					S|s)
+						$AUTOSTARTVPN &&
+							AUTOSTARTVPN='false' ||
+							AUTOSTARTVPN='true'
+						setConfigValue 'AUTOSTARTVPN' "$AUTOSTARTVPN"
+						storeConfig
+						;;
+					B|b) break ;;
+					*)
+						if [ "$IPOVERDNSSTATE" = 'started' ]; then
+							VPNBINDINTERFACE="$IPOVERDNSINTERFACE"
+							VPNBINDIPADDRESS="$IPOVERDNSIPADDRESS"
+						else
+							VPNBINDINTERFACE="$INTERFACE"
+							VPNBINDIPADDRESS="$IPADDRESS"
+						fi
+
+						if echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${CONFIGURABLEVPNS[$REPLY]}" ]; then
+							echo
+							SCRIPTNAME="$LIBPATH/vpn.d/${CONFIGURABLEVPNS[$REPLY]}"
+							if . "$SCRIPTNAME" 'CONFIGURE'; then
+								storeConfig
+							fi
+							SCRIPTNAME="$0"
+						else
+							echo 'Invalid input'
+						fi
+						;;
+				esac
+			fi
+		done
+		return 0
+		;;
+	'START')
+		if [ "$VPNSTATE" = 'started' ]; then
+			logError 'VPN is already active'
+			return 1
+		elif [ "$VPNSTATE" != 'stopped' ]; then
+			logError 'VPN is in error mode'
+			return 1
+		#elif [ "$IPOVERDNSSTATE" = 'started' ] && ! $FORCE; then
+		#	logError 'IP over DNS tunnel is active, not setting up VPN'
+		#	return 1
+		elif [ -z "$VPNTYPE" ] || [ "$VPNTYPE" = 'none' ]; then
+			logError 'No VPN configured'
+			return 1
+		elif [ "$VPNTYPE" != 'any' ] && [ ! -f "$LIBPATH/vpn.d/$VPNTYPE" ]; then
+			logError "Invallid VPN type $VPNTYPE"
+			return 1
+		fi
+
+		if [ "$IPOVERDNSSTATE" = 'started' ]; then
+			VPNBINDINTERFACE="$IPOVERDNSINTERFACE"
+			VPNBINDIPADDRESS="$IPOVERDNSIPADDRESS"
+		else
+			VPNBINDINTERFACE="$INTERFACE"
+			VPNBINDIPADDRESS="$IPADDRESS"
+		fi
+
+		if [ "$VPNTYPE" = 'any' ]; then
+			# Try any VPN type and stop once one is successfully connected
+			setState 'ACTIVEVPNTYPE' "none"
+			for SCRIPTNAME in $(run-parts --list "$LIBPATH/vpn.d"); do
+				if . "$SCRIPTNAME" START; then
+					setState 'VPNSTATE' 'started'
+					setState 'ACTIVEVPNTYPE' `basename "$SCRIPTNAME"`
+					break
+				fi
+			done
+			SCRIPTNAME="$0"
+			if [ "$ACTIVEVPNTYPE" = 'none' ]; then
+				setState 'VPNSTATE' 'failure'
+			fi
+		else
+			SCRIPTNAME="$LIBPATH/vpn.d/$VPNTYPE"
+			if . "$SCRIPTNAME" START; then
+				setState 'VPNSTATE' 'started'
+				setState 'ACTIVEVPNTYPE' "$VPNTYPE"
+			else
+				setState 'VPNSTATE' 'failure'
+				setState 'ACTIVEVPNTYPE' "none"
+			fi
+			SCRIPTNAME="$0"
+		fi
+
+		if [ "$VPNSTATE" != 'started' ] || [ "$ACTIVEVPNTYPE" = 'none' ]; then
+			setState 'VPNINTERFACE' ''
+			setState 'VPNIPADDRESS' ''
+			setState 'VPNNETMASK' ''
+			setState 'VPNGATEWAY' ''
+			storeState
+
+			return 1
+		fi
+
+		setState 'VPNINTERFACE' "$VPNINTERFACE"
+		IFCONFIG=`ifconfig "$VPNINTERFACE"`
+		setState 'VPNIPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		setState 'VPNNETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		#setState 'VPNGATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $VPNINTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
+
+		# Check if the remote end of the VPN can be reached
+		if !ping -I "$VPNINTERFACE" -q -c 1 -W "$TIMEOUT" "$VPNGATEWAY" > /dev/null 2>&1; then
+			logError 'Unable to reach remote end of SSH tunnel'
+			setState 'VPNSTATE' 'failure'
+			storeState
+
+			return 1
+		fi
+
+		if [ "$IPOVERDNSSTATE" = 'started' ]; then
+			ip route add "$VPNSERVERIPADDRESS" via "$IPOVERDNSGATEWAY"
+		else
+			ip route add "$VPNSERVERIPADDRESS" via "$GATEWAY"
+		fi
+
+		#ToDo Route VPN servers?
+
+		$DEBUGLOGGING && logMessage "$INTERFACE = $DEFAULTROUTEINTERFACE"
+		if [ "$IPOVERDNSSTATE" = 'started' ] && [ "$IPOVERDNSINTERFACE" = "$DEFAULTROUTEINTERFACE" ]; then
+			logMessage "Route trafic over $VPNNAME VPN"
+			ip route replace default via "$VPNGATEWAY"
+			setState 'DEFAULTROUTEINTERFACE' "$VPNINTERFACE"
+		elif [ "$IPOVERDNSSTATE" != 'started' ] && [ "$INTERFACE" = "$DEFAULTROUTEINTERFACE" ]; then
+			logMessage "Route trafic over $VPNNAME VPN"
+			ip route replace default via "$VPNGATEWAY"
+			setState 'DEFAULTROUTEINTERFACE' "$VPNINTERFACE"
+		fi
+
+		storeState
+
+		return 0
+		;;
+	'STOP')
+		# Go trough all the VPN scripts and stop
+		for SCRIPTNAME in $(run-parts --list "$LIBPATH/vpn.d"); do
+			if ! . "$SCRIPTNAME" STOP; then
+				logError 'An error accoured while trying to stop VPN type '`basename "$SCRIPTNAME"`
+				VPNSTATE='failure'
+			fi
+		done
+		SCRIPTNAME="$0"
+
+		[ VPNSTATE = 'failure' ] &&
+			return 1
+
+		$DEBUGLOGGING && logMessage "$VPNINTERFACE = $DEFAULTROUTEINTERFACE"
+		if [ "$VPNINTERFACE" = "$DEFAULTROUTEINTERFACE" ]; then
+			logMessage "Route trafic over $INTERFACE"
+			GATEWAY=`route -n | sed -n "s|^$VPNSERVERIPADDRESS *\([0-9.]*\) .* $INTERFACE|\1|p"`
+			[ ! -z "$GATEWAY" ] &&
+				ip route del "$VPNSERVERIPADDRESS" via "$GATEWAY" &&
+				ip route replace default via "$GATEWAY"
+			setState 'DEFAULTROUTEINTERFACE' "$INTERFACE"
+		fi
+
+		setState 'VPNSTATE' 'stopped'
+		setState 'ACTIVEVPNTYPE' 'none'
+		setState 'VPNINTERFACE' ''
+		setState 'VPNIPADDRESS' ''
+		setState 'VPNNETMASK' ''
+		setState 'VPNGATEWAY' ''
+		storeState
+
+		return 0
+		;;
+	'STATE')
+		VPNSTATE=`getState 'VPNSTATE'`
+		ACTIVEVPNTYPE=`getState 'ACTIVEVPNTYPE'`
+		VPNINTERFACE=`getState 'VPNINTERFACE'`
+		VPNIPADDRESS=`getState 'VPNIPADDRESS'`
+		VPNNETMASK=`getState 'VPNNETMASK'`
+		VPNGATEWAY=`getState 'VPNGATEWAY'`
+
+		if [ -z "$VPNSTATE" ]; then
+			setState 'VPNSTATE' 'stopped'
+			setState 'ACTIVEVPNTYPE' 'none'
+			setState 'VPNINTERFACE' ''
+			setState 'VPNIPADDRESS' ''
+			setState 'VPNNETMASK' ''
+			setState 'VPNGATEWAY' ''
+			storeState
+			$VERBOSELOGGING && logMessage 'VPN is not active'
+		fi
+
+		#for SCRIPTNAME in $(run-parts --list "$LIBPATH/vpn.d"); do
+		#	if . "$SCRIPTNAME" STATE; then
+		#		setState 'VPNSTATE' 'started'
+		#		setState 'ACTIVEVPNTYPE' `basename "$SCRIPTNAME"`
+		#		setState 'VPNINTERFACE' "$VPNINTERFACE"
+		#		IFCONFIG=`ifconfig "$VPNINTERFACE"`
+		#		setState 'VPNIPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		#		setState 'VPNNETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		#		setState 'VPNGATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $VPNINTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
+		#		storeState
+		#		$VERBOSELOGGING && logMessage 'VPN is active'
+		#		break
+		#	fi
+		#done
+		#SCRIPTNAME="$0"
+
+		$DEBUGLOGGING && logMessage "VPN is $IPOVERDNSSTATE"
+		storeState
+
+		[ "$VPNSTATE" = 'started' ] &&
+			return 0
+		return 1
+		;;
+esac
+
+return 1

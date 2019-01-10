@@ -1,0 +1,202 @@
+# WLANderlust
+#
+# SSH tunnel VPN script
+#
+# Rogier van Staveren, January 2019, initial release
+
+VPNNAME='SSH tunnel'
+
+# Append default SSH tunnel configuration to default configuration
+if ! grep -q "^SSHTUNNELSERVERHOSTNAME=" <<< "$DEFAULTCONFIG"; then
+         DEFAULTCONFIG="$DEFAULTCONFIG
+SSHTUNNELSERVERHOSTNAME=''
+SSHTUNNELUSERNAME=''"
+fi
+
+[ -z "$SSHTUNNELSERVERHOSTNAME" ] && SSHTUNNELSERVERHOSTNAME=`getConfigValue 'SSHTUNNELSERVERHOSTNAME'`
+[ -z "$SSHTUNNELUSERNAME" ] && SSHTUNNELUSERNAME=`getConfigValue 'SSHTUNNELUSERNAME'`
+
+HASCONFIG='true'
+[ ! -z "$SSHTUNNELSERVERHOSTNAME" ] && [ ! -z "$SSHTUNNELUSERNAME" ] &&
+	ISCONFIGURED='true' ||
+	ISCONFIGURED='false'
+
+case "$1" in
+	'CONFIGURE')
+		# Ask for VPN server hostname
+		while true; do
+			read -p 'SSH tunnel server hostname: ' -e -i "$SSHTUNNELSERVERHOSTNAME" 'SSHTUNNELSERVERHOSTNAME'
+			# Test if hostname can be resolved
+			if ! VPNSERVERIPADDRESS=`host -t A -W $TIMEOUT "$SSHTUNNELSERVERHOSTNAME"`; then
+				logError "SSH tunnel server hostname $SSHTUNNELSERVERHOSTNAME could not be resolved"
+			else
+				VPNSERVERIPADDRESS=`sed 's/^.* has address //g' <<< "$VPNSERVERIPADDRESS" | head -n 1`
+				if ! nc -s "$VPNBINDIPADDRESS" -4 -w "$TIMEOUT" -z "$VPNSERVERIPADDRESS" 22; then
+					logError "Unable to connect to SSH port on VPN server IP address $VPNSERVERIPADDRESS"
+				else
+					#ToDo Add server to known_hosts
+					break
+				fi
+			fi
+		done
+		read -p 'SSH tunnel server username: ' -e -i "$SSHTUNNELUSERNAME" 'SSHTUNNELUSERNAME'
+		#ToDo Generate private key
+		if [ ! -f ~/'.ssh/id_rsa' ]; then
+			ssh-keygen
+		fi
+		#ToDo Try to install private key on SSH server
+		logMessage "Your public rsa key, use this to configure your SSH tunnel server $SSHTUNNELSERVERHOSTNAME"
+		logMessage `cat ~/'.ssh/id_rsa.pub'`
+		#read -c
+		read -p 'Test connection (Y/N)? ' -i 'Y'
+		case "$REPLY" in
+			'Y'|'y')
+				logMessage 'Testing SSH connection'
+				. "$SCRIPTNAME" 'START' && . "$SCRIPTNAME" 'STOP' &&
+					logMessage 'Success!' ||
+					logError 'Failure!'
+				;;
+		esac
+
+		return 1
+		;;
+	'START')
+		if [ -z "$SSHTUNNELSERVERHOSTNAME" ]; then
+			logError 'No SSH tunnel server hostname configured'
+			return 1
+		elif [ -z "$SSHTUNNELUSERNAME" ]; then
+			logError 'No SSH tunnel server username configured'
+			return 1
+		elif ! VPNSERVERIPADDRESS=`host -t A -W $TIMEOUT "$SSHTUNNELSERVERHOSTNAME"`; then
+			logError "SSH tunnel server hostname $SSHTUNNELSERVERHOSTNAME could not be resolved"
+			return 1
+		else
+			#ToDo Pick a 'random' IP address if multiple addresses have been returned
+			VPNSERVERIPADDRESS=`sed 's/^.* has address //g' <<< "$VPNSERVERIPADDRESS" | head -n 1`
+
+			# Ping doesn't seem to work with my provider
+			if ! nc -s "$VPNBINDIPADDRESS" -4 -w "$TIMEOUT" -z "$VPNSERVERIPADDRESS" 22 > /dev/null 2>&1; then
+				logError "Unable to connect to SSH port on VPN server IP address $VPNSERVERIPADDRESS"
+				return 1
+			fi
+
+			# Create TUN interface on host
+			if ssh -o "ConnectTimeout=$TIMEOUT" -b "$VPNBINDIPADDRESS" "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" '/sbin/ifconfig tun0 > /dev/null 2>&1 || sudo ip tuntap add mode tun user vpn group vpn tun0'; then
+				logMessage "Created TUN interface on SSH tunnel server $SSHTUNNELSERVERHOSTNAME"
+			else
+				logError "Failed to created TUN interface on SSH tunnel server $SSHTUNNELSERVERHOSTNAME"
+				return 1
+			fi
+
+			logMessage 'Configuring SSH tunnel'
+			VPNINTERFACE=`ifconfig -a | sed -n 's|^tun\([0-9]*\):.*|\1|p' | sort | tail -n 1`
+			BODYLOGFILECOUNTER=$(($BODYLOGFILECOUNTER + 1))
+			[ ! -z "$VPNINTERFACE" ] &&
+				VPNINTERFACE="tun$(($VPNINTERFACE + 1))" ||
+				VPNINTERFACE='tun0'
+			$DEBUGLOGGING && logMessage "VPNINTERFACE=$VPNINTERFACE"
+			setState 'VPNINTERFACE' "$VPNINTERFACE"
+			# Check if TUN interface already exists, this is just paranoia
+			if ! /sbin/ifconfig "$VPNINTERFACE" > /dev/null 2>&1; then
+				if ip tuntap add mode tun "$VPNINTERFACE"; then
+					logMessage "Created TUN interface $VPNINTERFACE"
+				else
+					logError "Failed to create TUN interface $VPNINTERFACE"
+					return 1
+				fi
+			else
+				logError "TUN interface $VPNINTERFACE already exists"
+				return 1
+			fi
+
+
+			if [ "$IPOVERDNSSTATE" = 'started' ] && ssh -f \
+				-o 'PermitLocalCommand=yes' \
+				-o "LocalCommand=ifconfig '$VPNINTERFACE' 192.168.244.2 pointopoint 192.168.244.1 netmask 255.255.255.0" \
+				-o 'ServerAliveInterval=5' \
+				-o "ConnectTimeout=$TIMEOUT" \
+				-b "$IPOVERDNSIPADDRESS" \
+				-w 0:0 "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" \
+				'sudo ifconfig tun0 192.168.244.1 pointopoint 192.168.244.2 netmask 255.255.255.0'; then
+				logMessage 'Created SSH Tunnel'
+				sleep 2
+			elif ssh -f \
+				-o 'PermitLocalCommand=yes' \
+				-o "LocalCommand=ifconfig '$VPNINTERFACE' 192.168.244.2 pointopoint 192.168.244.1 netmask 255.255.255.0" \
+				-o 'ServerAliveInterval=5' \
+				-o "ConnectTimeout=$TIMEOUT" \
+				-b "$VPNBINDIPADDRESS" \
+				-w 0:0 "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" \
+				'sudo ifconfig tun0 192.168.244.1 pointopoint 192.168.244.2 netmask 255.255.255.0'; then
+				logMessage 'Created SSH Tunnel'
+				sleep 2
+			else
+				logError 'Failed to create SSH Tunnel'
+				return 1
+			fi
+
+
+			VPNSERVERHOSTNAME="$SSHTUNNELSERVERHOSTNAME"
+			setState 'VPNGATEWAY' '192.168.244.1'
+			$DEBUGLOGGING && logMessage "VPNINTERFACE=$VPNINTERFACE"
+			return 0
+		fi
+		;;
+	'STOP')
+		# Get PID of SSH tunnel
+
+		#ToDo Replace with pgrep
+		PROCESSINFO=`ps -ef | grep ".* ssh .* -o LocalCommand=ifconfig 'tun[0-9]' .* -b $VPNBINDIPADDRESS .* $SSHTUNNELUSERNAME@[0-9.]* .*"`
+		$DEBUGLOGGING && logMessage "PROCESSINFO=$PROCESSINFO"
+		if [ ! -z "$PROCESSINFO" ]; then
+			PID=`awk '{ print $2 }' <<< "$PROCESSINFO"`
+			logMessage 'Stopping SSH tunnel'
+			$VERBOSELOGGING && logMessage "SSH tunnel PID: $PID"
+			setState 'VPNINTERFACE' `sed -n "s|.* LocalCommand=ifconfig '\(tun[0-9]*\)' .*|\1|p" <<< "$PROCESSINFO"` #'
+			$VERBOSELOGGING && logMessage "SSH tunnel TUN interface: $VPNINTERFACE"
+			setState 'VPNSERVERIPADDRESS' `sed -n "s|.* $SSHTUNNELUSERNAME@\([0-9.]*\) .*|\1|p" <<< "$PROCESSINFO"`
+			$VERBOSELOGGING && logMessage "VPN server IP address: $VPNSERVERIPADDRESS"
+
+			if kill "$PID"; then
+				logMessage 'SSH tunnel stopped'
+			else
+				logError "Failed to stop SSH tunnel PID: $PID"
+				return 1
+			fi
+
+			# Check if TUN interface exists, this is just paranoia
+			if ifconfig "$VPNINTERFACE" > /dev/null 2>&1; then
+				# Remove local TUN interface
+				$VERBOSELOGGING && logMessage "Remove local TUN interface $VPNINTERFACE"
+				if ip tuntap del mode tun "$VPNINTERFACE"; then
+					$VERBOSELOGGING && logMessage "Local TUN interface $VPNINTERFACE removed"
+				else
+					logError "Failed to remove local TUN interface $VPNINTERFACE"
+					return 1
+				fi
+			else
+				logError "TUN interface $VPNINTERFACE does not exist"
+			fi
+		fi
+
+		return 0
+		;;
+	'STATE')
+		#ToDo Replace with pgrep
+		PROCESSINFO=`ps -ef | grep ".* ssh .* -o LocalCommand=ifconfig 'tun[0-9]' .* -b $VPNBINDIPADDRESS .* $SSHTUNNELUSERNAME@[0-9.]* .*"`
+		$DEBUGLOGGING && logMessage "PROCESSINFO=$PROCESSINFO"
+		PID=`awk '{ print $2 }' <<< "$PROCESSINFO"`
+		if [ ! -z "$PID" ]; then
+			$VERBOSELOGGING && logMessage "SSH tunnel PID: $PID"
+			setState 'VPNINTERFACE' `sed -n "s|.* LocalCommand=ifconfig '\(tun[0-9]*\)' .*|\1|p" <<< "$PROCESSINFO"` #'
+			$VERBOSELOGGING && logMessage "SSH tunnel TUN interface: $VPNINTERFACE"
+			VPNSERVERIPADDRESS=`sed -n "s|.* $SSHTUNNELUSERNAME@\([0-9.]*\) .*|\1|p" <<< "$PROCESSINFO"`
+			$VERBOSELOGGING && logMessage "VPN server IP address: $VPNSERVERIPADDRESS"
+			$DEBUGLOGGING && logMessage "$VPNINTERFACE = $DEFAULTROUTEINTERFACE"
+			VPNSERVERHOSTNAME="$SSHTUNNELSERVERHOSTNAME"
+			return 0
+		fi
+
+		return 1
+		;;
+esac

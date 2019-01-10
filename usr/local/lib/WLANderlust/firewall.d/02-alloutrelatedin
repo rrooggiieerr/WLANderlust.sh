@@ -1,0 +1,19 @@
+# WLANderlust
+#
+# Rogier van Staveren, January 2019, initial release
+
+case "$1" in
+	'START')
+		# Allow all connections out and only related ones in
+		if [ ! -z "$HOSTAPINTERFACE" ]; then
+			$VERBOSELOGGING && logMessage 'Allow all connections out and only related ones in'
+			iptables -A FORWARD -i "$FWINTERFACE" -o "$HOSTAPINTERFACE" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+			iptables -A FORWARD -i "$FWINTERFACE" -o "$HOSTAPINTERFACE" -m state --state RELATED,ESTABLISHED -j ACCEPT
+			iptables -A FORWARD -i "$HOSTAPINTERFACE" -o "$FWINTERFACE" -j ACCEPT
+		fi
+		return 0
+		;;
+	'STOP')
+		return 0
+		;;
+esac

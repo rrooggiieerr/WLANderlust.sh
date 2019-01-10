@@ -1,0 +1,20 @@
+# WLANderlust
+#
+# Rogier van Staveren, January 2019, initial release
+
+case "$1" in
+	'START')
+		if [ ! -z "$HOSTAPINTERFACE" ]; then
+			# Enable IP forwarding
+			$VERBOSELOGGING && logMessage 'Enable IP forwarding'
+			echo 1 > /proc/sys/net/ipv4/ip_forward
+		fi
+		return 0
+		;;
+	'STOP')
+		# Disable IP forwarding
+		$VERBOSELOGGING && logMessage 'Disable IP forwarding'
+		echo 0 > /proc/sys/net/ipv4/ip_forward
+		return 0
+		;;
+esac

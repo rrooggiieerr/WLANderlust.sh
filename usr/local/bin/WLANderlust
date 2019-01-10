@@ -1,0 +1,1305 @@
+#!/bin/bash
+#
+# WLANderlust
+#
+# Rogier van Staveren, January 2018, initial release
+
+# Are we root?
+[ "$(id -u)" -eq 0 ] &&
+	ROOT='true' ||
+	ROOT='false'
+
+usage()
+{
+	if $ROOT; then
+		echo -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection\e[0m
+
+Usage:
+  -h, --help
+  -i, --interface [interface]
+  -s, --solve
+  --startIPoverDNS	Starts IP over DNS tunneling if Captive Portal could not be solved
+  --stopIPoverDNS	Stops IP over DNS tunneling
+  --force		Forces IP over DNS tunneling if connection is not obstructed
+  --startVPN		Starts VPN if IP over DNS tunnel is not active
+  --VPNtype [type]	Sets the type of VPN to use
+  --stopVPN		Stops VPN
+  --startFirewall
+  --stopFirewall
+  --restartFirewall
+  --status
+  --verbose
+  --debug'
+  	else
+	  	echo -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection\e[0m
+
+Usage:
+  -h, --help
+  -i, --interface [interface]
+  -s, --solve
+  --status
+  --verbose
+  --debug
+
+Run as root for more options'
+	fi
+}
+
+SCRIPTNAME="$0"
+
+logMessage()
+{
+	[[ -t 1 || -p /dev/stdin ]] &&
+		echo "$@"
+	[ ! -z "$LOGFILE" ] && [ "$LOGFILE" != '/dev/stdout/' ] &&
+		echo "`date` $INTERFACE $SCRIPTNAME $@" >> "$LOGFILE"
+}
+
+logError()
+{
+	[[ -t 1 || -p /dev/stdin ]] &&
+		# Set text color to bold red
+		echo -e "\e[1m\e[31m$@\e[0m" > /dev/stderr
+	[ ! -z "$LOGFILE" ] && [ "$LOGFILE" != '/dev/stdout/' ] &&
+		echo "`date` $INTERFACE $SCRIPTNAME $@" >> "$LOGFILE"
+}
+
+MYDIR="${BASH_SOURCE%/*}"
+[[ ! -d "$MYDIR" ]] && MYDIR="$PWD"
+
+# Are we root?
+[ "$(id -u)" -eq 0 ] &&
+	ROOT='true' ||
+	ROOT='false'
+
+# Some default settings
+DEFAULTCONFIGPATH='/etc/WLANderlust'
+! $ROOT && DEFAULTCONFIGPATH=~/
+[ -z "$CONFIGPATH" ] && CONFIGPATH="$DEFAULTCONFIGPATH"
+DEFAULTCONFIGFILE="$CONFIGPATH/WLANderlust.conf"
+! $ROOT && DEFAULTCONFIGFILE=~/'.WLANderlust.conf'
+[ -z "$CONFIGFILE" ] && CONFIGFILE="$DEFAULTCONFIGFILE"
+
+DEFAULTLOGPATH='/var/log'
+! $ROOT && DEFAULTLOGPATH=~/
+DEFAULTLIBPATH="$(realpath "$MYDIR/../lib/WLANderlust/")"
+
+DEFAULTCONFIG="LOGPATH='$DEFAULTLOGPATH'
+LIBPATH='$DEFAULTLIBPATH'
+COOKIEJAR=''
+PASSWORDSFILE=''
+LOGFILE=''
+GPSFILE=''
+
+VERBOSELOGGING='false'
+DEBUGLOGGING='false'
+SHOWPASSWORDS='false'
+
+TIMEOUT='5'
+
+WHATISMYIPURL='https://api.ipify.org'"
+
+readConfig()
+{
+	# Load the WLANderlust configuration file
+	[ -z "$CONFIG" ] && [ -f "$CONFIGFILE" ] &&
+		CONFIG=`cat "$CONFIGFILE"`
+}
+
+# $1 key
+# $2 default value
+getConfigValue()
+{
+	readConfig
+
+	# Lookup key value in the configuration
+	VALUE=`sed -n "s|^$1=['\"]\?\([^'\"]*\)['\"]\?$|\1|p" <<< "$CONFIG"`
+	# If value is empty lookup the key value in the default configuration
+	[ -z "$VALUE" ] && VALUE=`sed -n "s|^$1=['\"]\?\([^'\"]*\)['\"]\?$|\1|p" <<< "$DEFAULTCONFIG"`
+	# If value is empty use the default value
+	[ -z "$VALUE" ] && VALUE="$2"
+
+	echo "$VALUE"
+}
+
+# $1 key
+# $2 value
+setConfigValue()
+{
+	readConfig
+
+	# Check if configuration key is already set
+	if grep -q "^$1=" <<< "$CONFIG"; then
+		# If configuration key is set, update value
+		CONFIG=`sed "s|^$1=.*$|$1='$2'|" <<< "$CONFIG"`
+	else
+		# If configuration key is not set, add new key with value
+		CONFIG+="
+$1='$2'"
+	fi
+}
+
+storeConfig()
+{
+	[ -z "$CONFIG" ] &&
+		return
+
+	# Check if new the configuration changes from the old configuration by comparing the MD5 sums
+	OLDMD5=`md5sum -t "$CONFIGFILE" | awk '{ print $1 }'`
+	NEWMD5=`md5sum -t - <<< "$CONFIG"`
+	if [ "$OLDMD5" != "$NEWMD5" ]; then
+		if touch "$CONFIGFILE"; then
+			# The MD5 sum differences, we're dealing with a new configuration, update the configuration
+			# Backup previous configuration
+			mv "$CONFIGFILE" "$CONFIGFILE.old`date +%Y%m%d%H%M%S`"
+			# Store new configuration
+			echo "$CONFIG" > "$CONFIGFILE"
+		else
+			logError "Can't write to configuration file" #'
+		fi
+	fi
+}
+
+DEFAULTCOOKIEJAR="$CONFIGPATH/WLANderlust.cookiejar"
+DEFAULTPASSWORDSFILE="$CONFIGPATH/WLANderlust.passwd"
+if ! $ROOT; then
+	DEFAULTCOOKIEJAR=~/'.WLANderlust.cookiejar'
+	DEFAULTPASSWORDSFILE=~/'.WLANderlust.passwd'
+fi
+
+[ -z "$LOGPATH" ] && LOGPATH=`getConfigValue 'LOGPATH'`
+DEFAULTLOGFILE="$LOGPATH/WLANderlust.log"
+DEFAULTGPSFILE="$LOGPATH/WLANderlust.gps"
+
+[ -z "$LIBPATH" ] && LIBPATH=`getConfigValue 'LIBPATH'`
+
+[ -z "$COOKIEJAR" ] && COOKIEJAR=`getConfigValue 'COOKIEJAR' "$DEFAULTCOOKIEJAR"`
+[ -z "$PASSWORDSFILE" ] && PASSWORDSFILE=`getConfigValue 'PASSWORDSFILE' "$DEFAULTPASSWORDSFILE"`
+[ -z "$LOGFILE" ] && LOGFILE=`getConfigValue 'LOGFILE' "$DEFAULTLOGFILE"`
+[ ! -w "$LOGFILE" ] && LOGFILE='/dev/stdout'
+[ -z "$GPSFILE" ] && GPSFILE=`getConfigValue 'GPSFILE' "$DEFAULTGPSFILE"`
+[ ! -w "$GPSFILE" ] && GPSFILE='/dev/null'
+[ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`
+[ -z "$VERBOSELOGGING" ] && VERBOSELOGGING=`getConfigValue 'VERBOSELOGGING'`
+[ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`
+[ -z "$TIMEOUT" ] && TIMEOUT=`getConfigValue 'TIMEOUT'`
+[ -z "$SHOWPASSWORDS" ] && SHOWPASSWORDS=`getConfigValue 'SHOWPASSWORDS'`
+
+if [ ! -f "$PASSWORDSFILE" ]; then
+	if touch "$PASSWORDSFILE"; then
+		cat << EOF > "$PASSWORDSFILE"
+# The WLANderlust passwords file has the following format:
+# BSSID;"SSID";"domain";latitude;longitude;share;"username";"password"
+# The BSSID field should be a valid BSSID
+# The SSID field is currently not allowed to contain the charachter ;
+# The domain field should be a valid domain name
+# The latitude
+# The longitude
+# The share field is reserved for future functionality and
+# The username field is currently not allowed to contain the charachter ;
+# The password field is allowed to contain any character
+EOF
+	else
+		logError 'Unable to create WLANderlust passwords file'
+	fi
+fi
+
+# Are we in interactive mode?
+[[ -t 1 || -p /dev/stdin ]] &&
+	INTERACTIVE='true' ||
+	INTERACTIVE='false'
+
+# Handle arguments
+SOLVE='false'
+STARTIPOVERDNS='false'
+STOPIPOVERDNS='false'
+STARTVPN='false'
+STOPVPN='false'
+STARTFIREWALL='false'
+STOPFIREWALL='false'
+FORCE='false'
+while [ ! -z "$1" ]; do
+	PARAM=`tr '[:upper:]' '[:lower:]' <<< "$1"`
+	if $ROOT; then
+		case $PARAM in
+			-h|--help) usage; exit ;;
+			-i|--interface) INTERFACE="$2"; shift ;;
+			-s|--solve) SOLVE='true' ;;
+			--startipoverdns|--startipoverdnstunneling) INTERACTIVE='false'; STARTIPOVERDNS='true' ;;
+			--stopipoverdns|--stopIPoverdnstunneling) INTERACTIVE='false'; STOPIPOVERDNS='true' ;;
+			--force) FORCE='true' ;;
+			--startvpn) INTERACTIVE='false'; STARTVPN='true' ;;
+			--vpntype) VPNTYPE="$2"; shift ;;
+			--stopvpn) INTERACTIVE='false'; STOPVPN='true' ;;
+			--startfirewall) INTERACTIVE='false'; STARTFIREWALL='true' ;;
+			--stopfirewall) INTERACTIVE='false'; STOPFIREWALL='true' ;;
+			--restartfirewall) INTERACTIVE='false'; STOPFIREWALL='true'; STARTFIREWALL='true' ;;
+			--state|--status) INTERACTIVE='false'; STATUS='true' ;;
+			--verbose) VERBOSELOGGING='true' ;;
+			--debug) DEBUGLOGGING='true' ;;
+			*)
+				logError "invalid parameter \"$PARAM\""
+				usage
+				exit
+				;;
+		esac
+	else
+		case $PARAM in
+			-h|--help) usage; exit ;;
+			-i|--interface) INTERFACE="$2"; shift ;;
+			-s|--solve) SOLVE='true' ;;
+			--state|--status) INTERACTIVE='false'; STATUS='true' ;;
+			--verbose) VERBOSELOGGING='true' ;;
+			--debug) DEBUGLOGGING='true' ;;
+			*)
+				logError "invalid parameter \"$PARAM\""
+				usage
+				exit
+				;;
+		esac
+	fi
+	shift
+done
+
+$DEBUGLOGGING && logMessage 'Debug logging enabled'
+$VERBOSELOGGING && logMessage 'Verbose logging enabled'
+$DEBUGLOGGING && logMessage "Interactive mode: $INTERACTIVE"
+
+TIMESTAMP=`date +%Y%m%d%H%M%S`
+
+# Get the Host AP interface, SSID and channel
+if [ -f '/etc/hostapd/hostapd.conf' ]; then
+	HOSTAPDCONF=`cat '/etc/hostapd/hostapd.conf'`
+	HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' <<< "$HOSTAPDCONF"`
+	HOSTAPSSID=`sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$HOSTAPDCONF"`
+	HOSTAPCHANNEL=`/sbin/iw dev "$HOSTAPINTERFACE" info | sed -n 's|^.*channel \([0-9]\+\) .*$|\1|p'`
+fi
+
+DEFAULTROUTEINTERFACE=`route -n | sed -n 's|^0\.0\.0\.0 .* \([^ ]*\)$|\1|p'`
+# If no interface is given try to figure out which interface to use
+if [ -z "$INTERFACE" ] && [ ! -z `sed "/lo/d;/tun[0-9]*/d;/dns[0-9]*/d;/$HOSTAPINTERFACE/d" <<< "$DEFAULTROUTEINTERFACE"` ]; then
+	INTERFACE="$DEFAULTROUTEINTERFACE"
+	logMessage "No network interface defined, using default route interface $DEFAULTROUTEINTERFACE"
+elif [ -z "$INTERFACE" ]; then
+	logMessage 'No network interface defined, detecting network interface'
+	INTERFACE=`ifconfig | sed -n 's|^\([a-z]*[0-9]*\):.*|\1|p' | sed "/lo/d;/tun[0-9]*/d;/dns[0-9]*/d;/$HOSTAPINTERFACE/d"`
+	if [ -z "$INTERFACE" ]; then
+		INTERFACE=`ifconfig -a | sed -n 's|^\([a-z]*[0-9]*\):.*|\1|p' | sed "/lo/d;/tun[0-9]*/d;/dns[0-9]*/d;/$HOSTAPINTERFACE/d"`
+	fi
+
+	if [ -z "$INTERFACE" ]; then
+		logError 'Unable to detect your network interface'
+		logError 'Please define a network interface with the --interface [interface] parameter'
+		exit 1
+	fi
+
+	# Check if only one interface is returned
+	if [ "`wc -l <<< "$INTERFACE"`" -gt 1 ]; then
+		$DEBUGLOGGING && echo "$INTERFACE"
+		logError 'Unable to detect your network interface'
+		logError 'Please define a network interface with the --interface [interface] parameter'
+		exit 1
+	fi
+fi
+
+if ! IFCONFIG=`ifconfig "$INTERFACE" 2> /dev/null`; then
+	logError "Interface $INTERFACE does not exist"
+	exit 1
+fi
+
+grep -q '<UP' <<< "$IFCONFIG" &&
+	INTERFACEISUP='true' ||
+	INTERFACEISUP='false'
+$DEBUGLOGGING && $INTERFACEISUP && logMessage "Interface $INTERFACE is up"
+$DEBUGLOGGING && ! $INTERFACEISUP && logMessage "Interface $INTERFACE is down"
+
+ISWIFIINTERFACE='false'
+[ "`uname`" = 'Linux' ] && grep -q '^wlan[0-9]*$' <<< "$INTERFACE" && ISWIFIINTERFACE='true'
+#ToDo [ "`uname`" = 'Darwin' ]
+$VERBOSELOGGING && $ISWIFIINTERFACE && logMessage "Using WiFi interface $INTERFACE"
+$VERBOSELOGGING && ! $ISWIFIINTERFACE && logMessage "Using non-WiFi interface $INTERFACE"
+IPADDRESS=`ifconfig "$INTERFACE" | sed -n 's|.*inet \([^ ]*\) .*|\1|p'`
+
+if $ROOT; then
+	[ -z "$INTERFACE" ] &&
+		STATEFILE='/var/run/WLANderlust.state' ||
+		STATEFILE="/var/run/WLANderlust.$INTERFACE.state"
+else
+	[ -z "$INTERFACE" ] &&
+		STATEFILE=~/'.WLANderlust.state' ||
+		STATEFILE=~/".WLANderlust.$INTERFACE.state"
+fi
+
+# Load the network state
+readState()
+{
+	# Load the state file
+	[ -z "$STATE" ] && [ -f "$STATEFILE" ] &&
+		STATE=`cat "$STATEFILE"`
+}
+readState
+
+# $1 key
+getState()
+{
+	readState
+
+	# Lookup key value in the configuration
+	sed -n "s|^$1=['\"]\?\([^'\"]*\)['\"]\?$|\1|p" <<< "$STATE"
+}
+
+# $1 key
+# $2 value
+setState()
+{
+	readState
+
+	# Check if state key is already set
+	if [ -z "$STATE" ]; then
+		STATE="$1='$2'"
+	elif grep -q "^$1=" <<< "$STATE"; then
+		# If configuration key is set, update value
+		STATE=`sed "s|^$1=.*$|$1='$2'|" <<< "$STATE"`
+	else
+		# If configuration key is not set, add new key with value
+		STATE+="
+$1='$2'"
+	fi
+	eval "$1='$2'"
+}
+
+storeState()
+{
+	#$DEBUGLOGGING && logMessage "$STATE"
+	[ -z "$STATE" ] &&
+		return
+
+	if [ ! -f "$STATEFILE" ]; then
+		$DEBUGLOGGING && logMessage 'State changed' &&
+			echo "$STATE"
+		touch "$STATEFILE" &&
+			echo "$STATE" > "$STATEFILE" ||
+			logError "Can't write to status file"
+	else
+		# Check if new the state changes from the old state by comparing the MD5 sums
+		OLDMD5=`md5sum -t "$STATEFILE" | awk '{ print $1 }'`
+		NEWMD5=`md5sum -t - <<< "$STATE" | awk '{ print $1 }'`
+		if [ "$OLDMD5" != "$NEWMD5" ]; then
+			# The MD5 sum differences, we're dealing with a new state, update the state
+			$DEBUGLOGGING && logMessage 'State changed' &&
+				diff "$STATEFILE" - <<< "$STATE"
+			# Store new state
+			touch "$STATEFILE" &&
+				echo "$STATE" > "$STATEFILE" ||
+				logError "Can't write to status file"
+		else
+			$DEBUGLOGGING && logMessage 'State not changed'
+		fi
+	fi
+}
+
+# Helper functions
+readPassword() {
+	unset PASSWORD
+	if $SHOWPASSWORDS; then
+		read -r -p "$1" -e -i "$2" PASSWORD
+	else
+		# Code example from https://stackoverflow.com/questions/4316730/linux-scripting-hiding-user-input-on-terminal
+		#ToDo Backspace dosn't work yet
+		echo -n "$1"
+		while IFS= read -r -s -n 1 _C; do
+			if [[ -z "$_C" ]]; then
+				echo
+				break
+			else
+				echo -n '*'
+				PASSWORD+="$_C"
+			fi
+		done
+	fi
+}
+
+# HTTP related functions
+expandLocation()
+{
+	# Check if it starts with a protocol
+	if grep -iq "^[a-z]*://" <<< "$1"; then
+		echo "$1"
+	elif grep -q '^/' <<< "$1"; then
+		echo -n "$2" | sed 's|\(^[a-zA-Z]*://[^/]*\)/.*|\1|'; echo "$1"
+	else
+		echo -n "$2" | sed 's|\(^.*/\).*|\1|'; echo "$1"
+	fi
+}
+
+# Tries to fiend a location redirect in a given HTML + headers.
+# First it ries toe fiend a Location header
+# Then a refresh meta tag
+# Then a window.location string, this is very crude
+getLocationHeader()
+{
+	LOCATION=''
+	if LOCATION=`echo "$1" | tr -d '\r' | sed -n 's|^Location: \(.*\)$|\1|Ip'` && [ ! -z "$LOCATION" ]; then
+		# We found a Location header
+		$VERBOSELOGGING && logMessage "Location header found: \"$LOCATION\""
+	elif LOCATION=`echo "$1" | tr -d '\r\n' | sed -n 's|.*\<meta http-equiv="refresh" [^>]*content="[^;]*; *url=\([^"]*\)".*|\1|Ip'` && [ ! -z "$LOCATION" ]; then
+		# We found a refresh meta tag
+		$VERBOSELOGGING && logMessage "Refresh meta tag found: \"$LOCATION\""
+	elif LOCATION=`echo "$1" | sed -n 's|.* window\.location=["'\'']\([^"'\'']*\)["'\''].*|\1|Ip' | head -n 1` && [ ! -z "$LOCATION" ]; then
+		# we found a JavaScript redirect
+		$VERBOSELOGGING && logMessage "JavaScript redirect found: \"$LOCATION\""
+	else
+		$VERBOSELOGGING && logMessage 'No location found'
+	fi
+
+	if [ ! -z "$LOCATION" ]; then
+		LOCATION=`expandLocation "$LOCATION" "$2"`
+		$VERBOSELOGGING && logMessage "Location expanded to: \"$LOCATION\""
+	fi
+}
+
+BODYLOGFILECOUNTER=1
+curlGet()
+{
+	[ -z "$1" ] &&
+		logError 'No location given' &&
+		return 1
+	LOCATION="$1"
+
+	# Create Cookie Jar if not exists
+	#[ ! -f "$COOKIEJAR" ] && touch "$COOKIEJAR"
+
+	CURLARGUMENTS=(--raw -4)
+	[ ! -z "$INTERFACE" ] && CURLARGUMENTS+=(--interface "$INTERFACE")
+	[ ! -z "$TIMEOUT" ] && CURLARGUMENTS+=(-m "$TIMEOUT")
+	[ -r "$COOKIEJAR" ] && CURLARGUMENTS+=(--cookie "$COOKIEJAR")
+	[ -f "$COOKIEJAR" ] && [ -w "$COOKIEJAR" ] && CURLARGUMENTS+=(--cookie-jar "$COOKIEJAR")
+	[ ! -f "$COOKIEJAR" ] && [ -w `dirname "$COOKIEJAR"` ] && CURLARGUMENTS+=(--cookie-jar "$COOKIEJAR")
+	[ ! -z "$LASTLOCATION" ] && CURLARGUMENTS+=(--referer "$LASTLOCATION")
+	CURLARGUMENTS+=(-s -i "$LOCATION")
+	$DEBUGLOGGING && logMessage curl "${CURLARGUMENTS[@]}"
+
+	$VERBOSELOGGING && logMessage "Retrieving \"$LOCATION\""
+	if BODY=`curl "${CURLARGUMENTS[@]}"`; then
+		if $CAPTIVEPORTALLOGGING; then
+			BODYLOGFILE="$CAPTIVEPORTALLOGPATH/CaptivePortal$TIMESTAMP-$BODYLOGFILECOUNTER.log"
+			echo "BSSID $BSSID" > "$BODYLOGFILE"
+			echo "SSID $SSID" >> "$BODYLOGFILE"
+			echo "curl ${CURLARGUMENTS[@]}" >> "$BODYLOGFILE"
+			echo "GET $LOCATION" >> "$BODYLOGFILE"
+			echo -n "$BODY" >> "$BODYLOGFILE"
+			$VERBOSELOGGING && logMessage "Body logged in \"$BODYLOGFILE\""
+		fi
+		BODYLOGFILECOUNTER=$(($BODYLOGFILECOUNTER + 1))
+		return 0;
+	fi
+	logError "Failed to retrieve '$LOCATION'"
+	return 1
+}
+
+curlPost()
+{
+	[ -z "$1" ] &&
+		logError 'No location given' &&
+		return 1
+	[ -z "$2" ] &&
+		logError 'No post data given' &&
+		return 1
+	LOCATION="$1"
+	POSTDATA="$2"
+
+	# Create Cookie Jar if not exists
+	#[ ! -f "$COOKIEJAR" ] && touch "$COOKIEJAR"
+
+	CURLARGUMENTS=(--raw -4)
+	[ ! -z "$INTERFACE" ] && CURLARGUMENTS+=(--interface "$INTERFACE")
+	[ ! -z "$TIMEOUT" ] && CURLARGUMENTS+=(-m "$TIMEOUT")
+	[ -r "$COOKIEJAR" ] && CURLARGUMENTS+=(--cookie "$COOKIEJAR")
+	[ -f "$COOKIEJAR" ] && [ -w "$COOKIEJAR" ] && CURLARGUMENTS+=(--cookie-jar "$COOKIEJAR")
+	[ ! -f "$COOKIEJAR" ] && [ -w `dirname "$COOKIEJAR"` ] && CURLARGUMENTS+=(--cookie-jar "$COOKIEJAR")
+	[ ! -z "$LASTLOCATION" ] && CURLARGUMENTS+=(-H "Origin: `echo "$LASTLOCATION" | sed 's|^\([a-z]*://[^/]*\)/.*$|\1|'`" --referer "$LASTLOCATION")
+	CURLARGUMENTS+=(-s -i -H 'Content-Type: application/x-www-form-urlencoded' --data "$POSTDATA" "$LOCATION")
+	$DEBUGLOGGING && logMessage curl "${CURLARGUMENTS[@]}"
+
+	$VERBOSELOGGING && logMessage "Posting \"$LOCATION\""
+	if BODY=`curl "${CURLARGUMENTS[@]}"`; then
+		if $CAPTIVEPORTALLOGGING; then
+			BODYLOGFILE="$CAPTIVEPORTALLOGPATH/CaptivePortal$TIMESTAMP-$BODYLOGFILECOUNTER.log"
+			echo "BSSID $BSSID" > "$BODYLOGFILE"
+			echo "SSID $SSID" >> "$BODYLOGFILE"
+			echo "curl ${CURLARGUMENTS[@]}" >> "$BODYLOGFILE"
+			echo "GET $LOCATION" >> "$BODYLOGFILE"
+			echo -n "$BODY" >> "$BODYLOGFILE"
+			$VERBOSELOGGING && logMessage "Body logged in \"$BODYLOGFILE\""
+		fi
+		BODYLOGFILECOUNTER=$(($BODYLOGFILECOUNTER + 1))
+		return 0;
+	fi
+	logError "Failed to retrieve '$LOCATION'"
+	return 1
+}
+
+getBody()
+{
+	LOCATION="$1"
+	if curlGet "$LOCATION"; then
+		LASTLOCATION="$LOCATION"
+		if [ "$2" = 'true' ]; then
+			getLocationHeader "$BODY" "$LOCATION"
+			while [ ! -z "$LOCATION" ] && [ $BODYLOGFILECOUNTER -lt 15 ]; do
+				if curlGet "$LOCATION"; then
+					LASTLOCATION="$LOCATION"
+					getLocationHeader "$BODY" "$LOCATION"
+				else
+					BODY=''
+					LOCATION=''
+				fi
+			done
+			LOCATION="$LASTLOCATION"
+		fi
+	else
+		BODY=''
+	fi
+}
+
+# Captive Portal functions
+# https://en.wikipedia.org/wiki/Captive_portal
+isCaptivePortalPresent()
+{
+	SCRIPTNAME="$LIBPATH/captiveportal"
+	. "$SCRIPTNAME" STATE
+	SCRIPTNAME="$0"
+}
+
+solveCaptivePortal()
+{
+	SCRIPTNAME="$LIBPATH/captiveportal"
+	. "$SCRIPTNAME" SOLVE
+	SCRIPTNAME="$0"
+}
+
+# WiFi functions
+getWiFiStatus()
+{
+	PREVIOUSBSSID=`getState 'BSSID'`
+
+	IFCONFIG=`ifconfig "$INTERFACE"`
+	grep -q '<UP' <<< "$IFCONFIG" &&
+		INTERFACEISUP='true' ||
+		INTERFACEISUP='false'
+
+	#ToDo make this portable
+	if $INTERFACEISUP && $ISWIFIINTERFACE &&
+		[ -x '/sbin/wpa_cli' ] && WPASTATUS=`/sbin/wpa_cli -i "$INTERFACE" status 2> /dev/null`; then
+		setState 'BSSID' `sed -n 's|^bssid=\(.*\)$|\1|p' <<< "$WPASTATUS"`
+		setState 'SSID' `sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$WPASTATUS"`
+		setState 'WPASTATE' `sed -n 's|^wpa_state=\(.*\)$|\1|p' <<< "$WPASTATUS"`
+		KEYMGMT=`sed -n 's|^key_mgmt=\(.*\)$|\1|p' <<< "$WPASTATUS"`
+
+		if [ -x '/sbin/iw' ]; then
+			CHANNEL=`/sbin/iw dev $INTERFACE info | sed -n 's|^.*channel \([0-9]\+\) .*$|\1|p'`
+			# Get the signal strength of the current connection
+			SIGNALSTRENGTH=`/sbin/iw dev $INTERFACE link | sed -n 's|^.*signal: \(.*\) dBm|\1|p'`
+		fi
+
+		ISROAMING='false'
+		if [ -f "/etc/network/interfaces.d/$INTERFACE" ]; then
+			WPASUPPLICANTCONF=`sed -n 's/^\swpa-\(conf\|roam\) \(.*\)/\2/p' "/etc/network/interfaces.d/$INTERFACE"`
+			# Are we in roaming mode?
+			grep -q '^\swpa-roam ' "/etc/network/interfaces.d/$INTERFACE" && ISROAMING='true'
+		fi
+
+		# Print some details
+		if $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+			if [ "$WPASTATE" = 'COMPLETED' ]; then
+				MESSAGE="Connected to \"$SSID\" ($BSSID)"
+				[ "$KEYMGMT" = 'NONE' ] &&
+					MESSAGE+=", no encryption" ||
+					MESSAGE+=", $KEYMGMT encryption"
+				MESSAGE+=", channel $CHANNEL, signal $SIGNALSTRENGTH"
+				$ISROAMING &&
+					MESSAGE+=", roaming" ||
+					MESSAGE+=", not roaming"
+				logMessage "$MESSAGE"
+			else
+				MESSAGE="Interface $INTERFACE is not connected, $WPASTATE"
+				$ISROAMING &&
+					MESSAGE+=", roaming" ||
+					MESSAGE+=", not roaming"
+				logError "$MESSAGE"
+			fi
+		fi
+	else
+		setState 'BSSID' ''
+		setState 'SSID' ''
+		setState 'WPASTATE' ''
+	fi
+
+	storeState
+}
+
+
+stopDHClient()
+{
+	if [ -f "/run/dhclient.$INTERFACE.pid" ]; then
+		/sbin/dhclient -x -pf "/run/dhclient.$INTERFACE.pid" > /dev/null 2>&1
+	fi
+	killall dhclient > /dev/null 2>&1
+	rm "/var/lib/dhcp/dhclient.$INTERFACE.leases" > /dev/null 2>&1
+	rm "/var/lib/dhcp/dhclient6.$INTERFACE.leases" > /dev/null 2>&1
+}
+
+startDHClient()
+{
+	/sbin/dhclient -nw -4 -v -pf "/run/dhclient.$INTERFACE.pid" -lf "/var/lib/dhcp/dhclient.$INTERFACE.leases" -I -df "/var/lib/dhcp/dhclient6.$INTERFACE.leases" "$INTERFACE" > /dev/null 2>&1
+}
+
+[ -z "$WHATISMYIPURL" ] && WHATISMYIPURL=`getConfigValue 'WHATISMYIPURL'`
+getNetworkStatus()
+{
+	setState 'DEFAULTROUTEINTERFACE' `route -n | sed -n 's|^0\.0\.0\.0 .* \([^ ]*\)$|\1|p'`
+
+	IFCONFIG=`ifconfig "$INTERFACE"`
+	grep -q '<UP' <<< "$IFCONFIG" &&
+		INTERFACEISUP='true' ||
+		INTERFACEISUP='false'
+
+	if ! $INTERFACEISUP; then
+		logError "Interface $INTERFACE is down"
+		setState 'IPADDRESS' ''
+		setState 'NETMASK' ''
+		setState 'GATEWAY' ''
+		setState 'EXTERNALIP' ''
+	elif ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
+		setState 'IPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		setState 'NETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		MACADDRESS=`sed -n 's|^.* ether \([a-z0-9:]*\) .*$|\1|p' <<< "$IFCONFIG"`
+
+		ROUTE=`route -n`
+		[ "$INTERFACE" = "$DEFAULTROUTEINTERFACE" ] &&
+			setState 'GATEWAY' `sed -n "s|^0\.0\.0\.0 *\([0-9.]*\) .* $INTERFACE|\1|p" <<< "$ROUTE"` ||
+			setState 'GATEWAY' `sed -n "s|[0-9.]* *\([0-9.]*\) .* $INTERFACE|\1|p" <<< "$ROUTE" | grep -v "0\.0\.0\.0" | uniq`
+		#setState 'GATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $INTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
+
+		if [ ! -z "$WHATISMYIPURL" ]; then
+			if [ "$VPNSTATE" = 'started' ]; then
+				setState 'EXTERNALIP' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+			elif [ "$IPOVERDNSSTATE" = 'started' ]; then
+				setState 'EXTERNALIP' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+			elif ([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]); then
+				setState 'EXTERNALIP' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+			fi
+		fi
+
+		# Print some details
+		if $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+			$ISWIFIINTERFACE &&
+				MESSAGE='Using WiFi' ||
+				MESSAGE='Using non-WiFi'
+			MESSAGE+=" interface $INTERFACE ($MACADDRESS), IP address: $IPADDRESS, netmask: $NETMASK"
+			[ ! -z "$GATEWAY" ] &&
+				MESSAGE+=", gateway: $GATEWAY"
+			[ ! -z "$EXTERNALIP" ] && [ "$IPOVERDNSSTATE" = 'stopped' ] && [ "$VPNSTATE" = 'stopped' ] &&
+				MESSAGE+=", external IP address: $EXTERNALIP"
+			logMessage "$MESSAGE"
+
+			if [ "$IPOVERDNSSTATE" = 'started' ]; then
+				MESSAGE="IP over DNS tunnel is active using interface $IPOVERDNSINTERFACE, server: $IPOVERDNSSERVER, mode: $IPOVERDNSMODE"
+				MESSAGE+=" , IP address: $IPOVERDNSIPADDRESS, netmask: $IPOVERDNSNETMASK"
+				[ ! -z "$IPOVERDNSGATEWAY" ] &&
+					MESSAGE+=", gateway: $IPOVERDNSGATEWAY"
+				[ ! -z "$EXTERNALIP" ] && [ "$VPNSTATE" = 'stopped' ] &&
+					MESSAGE+=", external IP address: $EXTERNALIP"
+				logMessage "$MESSAGE"
+			elif [ "$IPOVERDNSSTATE" = 'stopped' ]; then
+				logMessage 'IP over DNS tunnel is not active'
+			else
+				logMessage 'IP over DNS tunnel error'
+			fi
+
+			if [ "$VPNSTATE" = 'started' ]; then
+				MESSAGE="VPN type $VPNNAME is active using interface $VPNINTERFACE, server: $VPNSERVERHOSTNAME, IP address: $VPNIPADDRESS, netmask: $VPNNETMASK"
+				[ ! -z "$VPNGATEWAY" ] &&
+					MESSAGE+=", gateway: $VPNGATEWAY"
+				[ ! -z "$EXTERNALIP" ] &&
+					MESSAGE+=", external IP address: $EXTERNALIP"
+				logMessage "$MESSAGE"
+			elif [ "$VPNSTATE" = 'stopped' ]; then
+				logMessage 'VPN is not active'
+			else
+				logMessage 'VPN error'
+			fi
+
+		fi
+	else
+		# WiFi is not connected
+		setState 'IPADDRESS' ''
+		setState 'NETMASK' ''
+		setState 'GATEWAY' ''
+		setState 'EXTERNALIP' ''
+	fi
+
+	storeState
+}
+
+scanForNetworks()
+{
+	! $INTERFACEISUP &&
+		return 1
+
+	echo -n 'Scanning'
+	while ! IWLISTSCAN=`iwlist "$INTERFACE" scan 2> /dev/null`; do
+		echo -n '.'
+		sleep 1
+	done
+
+	WIFIINFO=`grep -B 5 -A 4 'ESSID:' <<< "$IWLISTSCAN" | sed 's|^  \s*|  |'`
+	WIFIINFO=`tac <<< "$WIFIINFO" | sed -n "/Mode:Master/I,+10 p" | grep -A 5 'ESSID:' | sed "/ESSID:\"$HOSTAPSSID\"/I,+6 d" | tac`
+
+	[ -z "$WIFIINFO" ] &&
+		echo ' - No WiFi networks found' ||
+		echo
+}
+
+reassociateInterface()
+{
+	! $ISWIFIINTERFACE &&
+		return 1
+
+	! $ISROAMING && stopDHClient
+	wpa_cli -i "$INTERFACE" reassociate > /dev/null 2>&1
+	! $ISROAMING && startDHClient
+}
+
+append2wpa_supplicant()
+{
+	if [ ! -f "$WPASUPPLICANTCONF" ]; then
+		logError "$WPASUPPLICANTCONF does not exist"
+		return 1
+	elif [ ! -w "$WPASUPPLICANTCONF" ]; then
+		logError "$WPASUPPLICANTCONF is not writable"
+		return 1
+	elif /bin/grep -q "ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
+		logError "SSID \"$SSID\" is already configured in wpa_supplicant configuration"
+		return 1
+	fi
+
+	logMessage "Appending configuration for SSID \"$1\" to $WPASUPPLICANTCONF"
+	cat << EOF >> "$WPASUPPLICANTCONF"
+
+# Added on `date` by WLANderlust
+network={
+	ssid="$1"
+	key_mgmt=NONE
+	priority=$2
+}
+EOF
+
+	# Reload the wpa_supplicant configuration
+	$VERBOSELOGGING && logMessage 'Reload the wpa_supplicant configuration'
+	/sbin/wpa_cli -i "$INTERFACE" reconfigure
+	$VERBOSELOGGING && logMessage 'Wpa_supplicant configuration reloaded'
+}
+
+editwpa_supplicant()
+{
+	if [ ! -f "$WPASUPPLICANTCONF" ]; then
+		logError "$WPASUPPLICANTCONF does not exist"
+		return 1
+	elif [ ! -w "$WPASUPPLICANTCONF" ]; then
+		logError "$WPASUPPLICANTCONF is not writable"
+		return 1
+	fi
+
+	if [ ! -f ~/.selected_editor ]; then
+		/usr/bin/select-editor
+	fi
+	. ~/.selected_editor
+
+	OLDMD5=`md5sum -t "$WPASUPPLICANTCONF" | awk '{ print $1 }'`
+	"$SELECTED_EDITOR" "$WPASUPPLICANTCONF"
+	NEWMD5=`md5sum -t "$WPASUPPLICANTCONF" | awk '{ print $1 }'`
+
+	[ "$OLDMD5" = "$NEWMD5" ] &&
+		return 0
+
+	# Reload the wpa_supplicant configuration if the file has changed
+	$VERBOSELOGGING && logMessage 'Reload the wpa_supplicant configuration'
+	/sbin/wpa_cli -i "$INTERFACE" reconfigure
+	$VERBOSELOGGING && logMessage 'Wpa_supplicant configuration reloaded'
+}
+
+configureWiFi()
+{
+	SSID="$1"
+	SSIDINFO="$2"
+
+	# Check if this network is already in wpa_supplicant
+	if /bin/fgrep -q -x "   ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
+		OLDWIFICONFIG=`sudo fgrep -B 1 -A 3 -x "    ssid=\"$SSID\"" "$WPASUPPLICANTCONF"`
+
+		echo 'SSID already configured:'
+		echo "$OLDWIFICONFIG"
+		echo
+		echo 'Replace/Delete/Quit? (R/D/Q)'
+		read -r -n 1 CHOICE
+		case "$CHOICE" in
+			D|d)
+				logError 'Delete configuration not yet implemented'
+				return 1
+			;;
+			Q|q) return 1 ;;
+		esac
+	fi
+
+	if [ ! -z "$SSID" ]; then
+		if [ -z "$SSIDINFO" ]; then
+			readPassword 'Password: '
+			echo
+		elif echo -n "$SSIDINFO" | grep -q "^  Encryption key:on$"; then
+			unset PASSWORD
+			# Check password length, 8 to 63 charactrs
+			while ! echo -n "$PASSWORD"| egrep -q "^.{8,63}$"; do
+				readPassword 'Password: ' "$PASSWORD"
+			done
+			echo
+		fi
+
+		if [ ! -z "$PASSWORD" ]; then
+			WIFICONFIG="network={
+	#bssid=$BSSID
+	ssid=\"$SSID\"
+	psk=\"$PASSWORD\"
+	priority=50
+}"
+		else
+			WIFICONFIG="network={
+	#bssid=$BSSID
+	ssid=\"$SSID\"
+	key_mgmt=NONE
+	priority=50
+}"
+		fi
+
+		# Check if this network is already in wpa_supplicant
+		#if ! /bin/fgrep -q -x " ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
+		if ! /bin/grep -q "^\s*ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
+			while true; do
+				echo 'Configuration:'
+				echo "$WIFICONFIG"
+				echo
+				echo 'Save? (Y/n/e)'
+				read -r -n 1 CHOICE
+				case "$CHOICE" in
+					''|Y|y)
+						echo -e "\n# Added on `date` by WLANderlust" >> "$WPASUPPLICANTCONF"
+						echo "$WIFICONFIG" >> "$WPASUPPLICANTCONF"
+						logMessage 'Configuration stored'
+
+						$ROAMING || stopDHClient
+						# Reload the wpa_supplicant configuration
+						wpa_cli -i $INTERFACE reconfigure > /dev/null
+						$ROAMING || startDHClient
+						return 0
+						;;
+					E|e)
+						TEMPFILE=`tempfile`
+						echo "$WIFICONFIG" > "$TEMPFILE"
+						if [ ! -f ~/.selected_editor ]; then
+							/usr/bin/select-editor
+						fi
+						. ~/.selected_editor
+						"$SELECTED_EDITOR" "$TEMPFILE"
+						WIFICONFIG=`cat "$TEMPFILE"`
+						rm "$TEMPFILE"
+						;;
+					N|n)
+						logError 'Configuration not stored'
+						return 1
+						;;
+				esac
+			done
+		else
+			echo 'New configuration:'
+			echo "$WIFICONFIG"
+			echo
+			echo 'Save? (y/N)'
+			read -n 1 CHOICE
+			case "$CHOICE" in
+				Y|y)
+					logError 'Replace configuration not yet implemented'
+					return 1
+					;;
+				*)
+					logError 'New configuration not stored'
+					return 1
+					;;
+			esac
+		fi
+	fi
+
+	return 1
+}
+
+configureWiFiManual()
+{
+	read -r -p 'SSID: ' SSID
+	configureWiFi "$SSID" ''
+}
+
+toggleRoaming()
+{
+	! $ISWIFIINTERFACE &&
+		return 1
+	[ ! -f "/etc/network/interfaces.d/$INTERFACE" ] &&
+		return 1
+
+	if $ISROAMING; then
+		# Disable roaming
+		wpa_action "$INTERFACE" stop > /dev/null 2>&1
+		ifdown "$INTERFACE" > /dev/null 2>&1
+		INTERFACECONFIG=`sed 's| inet manual| inet dhcp|;s|wpa-roam |wpa-conf |' "/etc/network/interfaces.d/$INTERFACE"`
+		echo "$INTERFACECONFIG" > "/etc/network/interfaces.d/$INTERFACE"
+		ifup "$INTERFACE" > /dev/null 2>&1 &
+		ISROAMING='false'
+	else
+		# Enable roaming
+		ifdown "$INTERFACE" > /dev/null 2>&1
+		INTERFACECONFIG=`sed 's| inet dhcp| inet manual|;s|wpa-conf |wpa-roam |' "/etc/network/interfaces.d/$INTERFACE"`
+		echo "$INTERFACECONFIG" > "/etc/network/interfaces.d/$INTERFACE"
+		ifup "$INTERFACE" > /dev/null 2>&1 &
+		ISROAMING='true'
+	fi
+}
+
+# IP over DNS tunneling functions
+isIPoverDNSactive()
+{
+	SCRIPTNAME="$LIBPATH/ipoverdns"
+	. "$SCRIPTNAME" STATE
+	SCRIPTNAME="$0"
+}
+isIPoverDNSactive
+
+startIPoverDNStunneling()
+{
+	SCRIPTNAME="$LIBPATH/ipoverdns"
+	. "$SCRIPTNAME" START
+	SCRIPTNAME="$0"
+}
+
+stopIPoverDNStunneling()
+{
+	SCRIPTNAME="$LIBPATH/ipoverdns"
+	. "$SCRIPTNAME" STOP
+	SCRIPTNAME="$0"
+}
+
+# VPN functions
+isVPNactive()
+{
+	SCRIPTNAME="$LIBPATH/vpn"
+	. "$SCRIPTNAME" STATE
+	SCRIPTNAME="$0"
+}
+isVPNactive
+
+startVPN()
+{
+	SCRIPTNAME="$LIBPATH/vpn"
+	. "$SCRIPTNAME" START
+	SCRIPTNAME="$0"
+}
+
+stopVPN()
+{
+	SCRIPTNAME="$LIBPATH/vpn"
+	. "$SCRIPTNAME" STOP
+	SCRIPTNAME="$0"
+}
+
+# Firewall functions
+startFirewall()
+{
+	FWINTERFACE="$INTERFACE"
+	if [ "$IPOVERDNSSTATE" = 'started' ]; then
+		FWINTERFACE="$IPOVERDNSINTERFACE"
+	elif [ "$VPNSTATE" = 'started' ]; then
+		FWINTERFACE="$VPNINTERFACE"
+	else
+		FWINTERFACE="$INTERFACE"
+	fi
+
+	for FILE in $(run-parts --list "$LIBPATH/firewall.d"); do
+		SCRIPTNAME="$FILE"
+		. "$FILE" START
+	done
+	SCRIPTNAME="$0"
+}
+
+stopFirewall()
+{
+	$VERBOSELOGGING && logMessage 'Stopping Firewall'
+
+	for FILE in $(run-parts --list --reverse "$LIBPATH/firewall.d"); do
+		SCRIPTNAME="$FILE"
+		. "$FILE" STOP
+	done
+	SCRIPTNAME="$0"
+
+	FWINTERFACE="$INTERFACE"
+	logMessage 'Firewall stopped'
+}
+
+# User interaction
+WLANderlustConfigurationMenu()
+{
+	while true; do
+		! $VERBOSELOGGING && clear
+		echo -e '\e[1mWLANderlust'
+		echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
+		echo 'Configuration Menu'
+		echo
+		echo -e "  \e[1mW\e[0m Edit "`sed 's|^\([^Ww]*\)\([Ww]\)\(.*\)$|\1\\\\e[1m\2\\\\e[0m\3|' <<< "$WPASUPPLICANTCONF"`
+		echo -e '  \e[1mC\e[0m Configure \e[1mC\e[0maptive Portal'
+		echo -e '  \e[1mD\e[0m Configure IP over \e[1mD\e[0mNS tunneling'
+		echo -e '  \e[1mV\e[0m Configure \e[1mV\e[0mPN'
+		$ISWIFIINTERFACE && $ISROAMING &&
+			echo -e '  \e[1mR\e[0m Disable \e[1mr\e[0moaming'
+		$ISWIFIINTERFACE && ! $ISROAMING &&
+			echo -e '  \e[1mR\e[0m Enable \e[1mR\e[0moaming'
+		$SHOWPASSWORDS &&
+			echo -e '  \e[1mP\e[0m Hide \e[1mP\e[0masswords' ||
+			echo -e '  \e[1mP\e[0m Show \e[1mP\e[0masswords'
+		echo -e '  \e[1mB\e[0m \e[1mB\e[0mack to main menu'
+		echo -e '  \e[1mQ\e[0m \e[1mQ\e[0muit'
+		echo
+
+		# Flush stdin
+		read -d '' -t 0.1 -n 10000 IGNORE
+		if read -r -p 'Option: '; then
+			case "$REPLY" in
+				W|w) editwpa_supplicant ;;
+				D|d) . "$LIBPATH/ipoverdns" CONFIGURE ;;
+				V|v) . "$LIBPATH/vpn" CONFIGURE ;;
+				R|r) toggleRoaming ;;
+				P|p)
+					$SHOWPASSWORDS &&
+						SHOWPASSWORDS='false' ||
+						SHOWPASSWORDS='true'
+					setConfigValue 'SHOWPASSWORDS' "$SHOWPASSWORDS"
+					storeConfig
+					;;
+				B|b) break ;;
+				Q|q|X|x) exit ;;
+			esac
+		fi
+	done
+}
+
+WLANderlustMenu()
+{
+	SCANFORNETWORKS='false'
+	while true; do
+	! $VERBOSELOGGING && clear
+	echo -e '\e[1mWLANderlust'
+	echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
+	getWiFiStatus
+	$INTERFACEISUP &&
+		(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+		isCaptivePortalPresent
+	getNetworkStatus
+	echo
+
+	$INTERFACEISUP &&
+		$ISWIFIINTERFACE &&
+		[ "$WPASTATE" != 'COMPLETED' ] &&
+		[ ! -z "$IPADDRESS" ] &&
+		SCANFORNETWORKS='true'
+	$SCANFORNETWORKS &&
+		scanForNetworks &&
+		echo
+	if $SCANFORNETWORKS && [ ! -z "$WIFIINFO" ]; then
+		#ToDo Rewrite to use sed -n
+		mapfile -t SSIDS < <(grep 'ESSID' <<< "$WIFIINFO" | sed 's|.*"\(.*\)"|\1|' | sort -bf | uniq)
+		CURRENTSSID="$SSID"
+		for I in ${!SSIDS[@]}; do
+			SSID=${SSIDS[$I]}
+			SSIDINFO=`fgrep -B 5 "ESSID:\"$SSID\"" <<< "$WIFIINFO"`
+			#ToDo Rewrite to use sed -n
+			CHANNEL=`echo -n "$SSIDINFO" | grep 'Channel:' | sed 's|^  Channel:||' | head -n 1`
+			# Calculate signal quality
+			QUALITY=$(( 100 * `echo "$SSIDINFO" | grep "^  Quality=" | sed 's|.*Quality=\([0-9]*/[0-9]*\)  Signal level=-[0-9]* dBm.*|\1|' | sort | tail -n 1` ))
+
+			#
+			if [ "$WPASTATE" = 'COMPLETED' ] && [ "$SSID" = "$CURRENTSSID" ]; then
+				echo -n "✔︎"
+			else
+				echo -n ' '
+			fi
+
+			printf '\e[1m%2d\e[0m' $I
+
+			# Print a floppy character if the SSID is already configured in the WPA supplicant configuration
+			grep -q "^\sssid=\"$SSID\"" "$WPASUPPLICANTCONF" &&
+				echo -n "💾" ||
+				echo -n ' '
+
+			# Print a lock character if encryption is on
+			grep -q "^  Encryption key:on$" <<< "$SSIDINFO" &&
+				echo -n "🔒" ||
+				echo -n ' '
+
+			#for FILE in `ls /home/pi/Instabridge/*.dib`; do
+			#       sqlite3 $FILE 'select "'$FILE'", `ssid`, quote(`security.password`), `location.latitude`, `location.longitude` from hotspots where `ssid` like "'"$SSID"'" COLLATE NOCASE'
+			#done
+
+			printf '%3d%% %2d "%s"' $QUALITY $CHANNEL "$SSID"
+
+			echo
+		done
+		SSID="$CURRENTSSID"
+	fi
+	$SCANFORNETWORKS &&
+		echo -e '  \e[1mM\e[0m \e[1mM\e[0manual'
+
+	$SCANFORNETWORKS &&
+		echo -e '  \e[1mW\e[0m Stop scanning W\e[0miFi for networks' ||
+		echo -e '  \e[1mW\e[0m Scan for \e[1mW\e[0miFi networks'
+	$SCANFORNETWORKS &&
+		[ "$WPASTATE" = 'COMPLETED' ] &&
+		echo -e "  \e[1mA\e[0m Re\e[1ma\e[0mssociate interface $INTERFACE"
+	(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+		[ "$CAPTIVEPORTALSTATE" != 'none' ] &&
+		[ "$CAPTIVEPORTALSTATE" != 'solved' ] &&
+		echo -e '  \e[1mS\e[0m \e[1mS\e[0molve Captive Portal'
+	(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+		(([ "$CAPTIVEPORTALSTATE" != 'none' ] && [ "$CAPTIVEPORTALSTATE" != 'solved' ]) || $FORCE) &&
+		[ "$IPOVERDNSSTATE" = 'stopped' ] &&
+		[ "$VPNSTATE" = 'stopped' ] &&
+		echo -e '  \e[1mD\e[0m Start IP over \e[1mD\e[0mNS tunneling'
+	[ "$IPOVERDNSSTATE" != 'stopped' ] && [ "$VPNSTATE" = 'stopped' ] &&
+		echo -e '  \e[1mD\e[0m Stop IP over \e[1mD\e[0mNS tunneling'
+	(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+		([ "$CAPTIVEPORTALSTATE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]) &&
+		[ "$VPNSTATE" = 'stopped' ] &&
+		echo -e '  \e[1mV\e[0m Start \e[1mV\e[0mPN'
+	[ "$VPNSTATE" != 'stopped' ] && echo -e '  \e[1mV\e[0m Stop \e[1mV\e[0mPN'
+	echo -e '  \e[1mC\e[0m \e[1mC\e[0monfigure WLANderlust'
+	echo -e '  \e[1mQ\e[0m \e[1mQ\e[0muit'
+	echo
+
+	# Flush stdin
+	read -d '' -t 0.1 -n 10000 IGNORE
+
+	if $SCANFORNETWORKS && read -r -p 'Network to configure or option: ' -t 30 || read -r -p 'Option: '; then
+		case "$REPLY" in
+			W|w)
+				$SCANFORNETWORKS &&
+					SCANFORNETWORKS='false' ||
+					SCANFORNETWORKS='true'
+				;;
+			A|a)
+				reassociateInterface
+				;;
+			S|s)
+				solveCaptivePortal
+		       	       ;;
+			D|d)
+				echo
+				if [ "$IPOVERDNSSTATE" = 'stopped' ]; then
+					startIPoverDNStunneling
+					stopFirewall
+					startFirewall
+				else
+					stopIPoverDNStunneling
+					stopFirewall
+					startFirewall
+				fi
+				;;
+			V|v)
+				echo
+				if [ "$VPNSTATE" = 'stopped' ]; then
+					startVPN
+					stopFirewall
+					startFirewall
+				else
+					stopVPN
+					stopFirewall
+					startFirewall
+				fi
+				;;
+			Q|q|X|x) exit ;;
+			C|c)
+				WLANderlustConfigurationMenu
+				;;
+			M|m)
+				configureWiFiManual
+				;;
+			*)
+				if $SCANFORNETWORKS && echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${SSIDS[$REPLY]}" ]; then
+					echo
+					SSID="${SSIDS[$REPLY]}"
+					echo "SSID: $SSID"
+					SSIDINFO=`echo -n "$WIFIINFO" | fgrep -B 5 "  ESSID:\"$SSID\""`
+					configureWiFi "$SSID" "$SSIDINFO"
+					break
+				else
+					echo -en '\t\e[1m\e[31mInvalid input\e[0m\r'
+				fi
+				;;
+		esac
+	fi
+
+	storeState
+	done
+}
+
+if $INTERACTIVE; then
+	if $ROOT; then
+		WLANderlustMenu
+	else
+		echo -e '\e[1mWLANderlust'
+		echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
+		getWiFiStatus
+		isCaptivePortalPresent
+		getNetworkStatus
+		echo
+
+		if (! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+			[ "$CAPTIVEPORTALSTATE" != 'none' ] &&
+			[ "$CAPTIVEPORTALSTATE" != 'solved' ] &&
+			$SOLVE; then
+			solveCaptivePortal
+			storeState
+		fi
+		echo 'Run as root for more options'
+	fi
+else
+	getWiFiStatus
+	if $ISWIFIINTERFACE && [ "$WPASTATE" != 'COMPLETED' ]; then
+		logMessage "Interface $INTERFACE is not connected"
+	else
+		if $ROOT; then
+			$STOPFIREWALL && stopFirewall
+			$STOPVPN && stopVPN
+			$STOPIPOVERDNS && stopIPoverDNStunneling
+		fi
+		isCaptivePortalPresent
+		getNetworkStatus
+		(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+			[ "$CAPTIVEPORTALSTATE" != 'none' ] &&
+			[ "$CAPTIVEPORTALSTATE" != 'solved' ] &&
+			$SOLVE && 
+			solveCaptivePortal
+		if $ROOT; then
+			$STARTIPOVERDNS && startIPoverDNStunneling
+			$STARTVPN && startVPN
+			$STARTFIREWALL && startFirewall
+		fi
+		getNetworkStatus
+	fi
+	storeState
+fi

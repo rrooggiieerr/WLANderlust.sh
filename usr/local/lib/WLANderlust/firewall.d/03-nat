@@ -1,0 +1,20 @@
+# WLANderlust
+#
+# Rogier van Staveren, January 2019, initial release
+
+case "$1" in
+	'START')
+		if [ ! -z "$HOSTAPINTERFACE" ]; then
+			# Enable masquerading
+			$VERBOSELOGGING && logMessage 'Enable masquerading'
+			iptables -t nat -A POSTROUTING -o $FWINTERFACE -j MASQUERADE
+		fi
+		return 0
+		;;
+	'STOP')
+		# Disable masquerading
+		$VERBOSELOGGING && logMessage 'Disable masquerading'
+		iptables -t nat -F POSTROUTING
+		return 0
+		;;
+esac

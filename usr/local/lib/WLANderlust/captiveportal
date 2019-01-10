@@ -1,0 +1,320 @@
+# WLANderlust
+#
+# Captive Portal functions
+# https://en.wikipedia.org/wiki/Captive_portal
+#
+# Rogier van Staveren, January 2019, initial release
+
+# Append default Captive Portal configuration to default configuration
+if ! grep -q "^# Captive Portal detection" <<< "$DEFAULTCONFIG"; then
+	DEFAULTCONFIG="$DEFAULTCONFIG
+
+# Captive Portal detection
+CAPTIVEPORTALLOGGING='false'
+CAPTIVEPORTALLOGPATH=''
+# The Android way:
+CAPTIVEPORTALDETECTIONURL='http://google.com/generate_204'
+CAPTIVEPORTALDETECTIONRESPONSE='^HTTP/1.1 204 No Content'
+#CAPTIVEPORTALDETECTIONURL='http://connectivitycheck.gstatic.com/generate_204'
+#CAPTIVEPORTALDETECTIONRESPONSE='^HTTP/1.1 204 No Content'
+# The Apple way:
+#CAPTIVEPORTALDETECTIONURL='http://captive.apple.com/'
+#CAPTIVEPORTALDETECTIONRESPONSE='^<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>'
+# The Microsoft way:
+#CAPTIVEPORTALDETECTIONURL='http://www.msftncsi.com/ncsi.txt'
+#CAPTIVEPORTALDETECTIONRESPONSE='^Microsoft NCSI'"
+fi
+
+[ -z "$CAPTIVEPORTALLOGGING" ] && CAPTIVEPORTALLOGGING=`getConfigValue 'CAPTIVEPORTALLOGGING'`
+[ -z "$CAPTIVEPORTALLOGPATH" ] && CAPTIVEPORTALLOGPATH=`getConfigValue 'CAPTIVEPORTALLOGPATH'`
+"$CAPTIVEPORTALLOGGING" && [ ! -d "$CAPTIVEPORTALLOGPATH" ] && mkdir -p "$CAPTIVEPORTALLOGPATH"
+[ -z "$CAPTIVEPORTALDETECTIONURL" ] && CAPTIVEPORTALDETECTIONURL=`getConfigValue 'CAPTIVEPORTALDETECTIONURL'`
+[ -z "$CAPTIVEPORTALDETECTIONRESPONSE" ] && CAPTIVEPORTALDETECTIONRESPONSE=`getConfigValue 'CAPTIVEPORTALDETECTIONRESPONSE'`
+
+# The Captive Portal password list has the following format:
+# BSSID;"SSID";"domain";latitude;longitude;share;"username";"password"
+# The BSSID field should be a valid BSSID
+# The SSID field is currently not allowed to contain the charachter ;
+# The domain field should be a valid domain name
+# The latitude
+# The longitude
+# The share field is reserved for future functionality and 
+# The username field is currently not allowed to contain the charachter ;
+# The password field is allowed to contain any character
+
+# Gets the Captive Portal username, if any, from the Captive Portal password list
+# $1 = BSSID
+# $2 = SSID
+# $3 = hostname or URL
+# $4 = latitude
+# $5 = longitude
+getCaptivePortalUsername()
+{
+	USERNAME=''
+	if [ ! -f "$PASSWORDSFILE" ]; then
+		logError "Passwords file '$PASSWORDSFILE' does not exist"
+		return 1
+	fi
+
+	# Incase an URL has been provided, take the domain part
+	if grep -iq "^[a-z]*://" <<< "$3"; then
+		DOMAINNAME=`sed 's|^[a-z]*://\([^/]*\)/.*|\1|I' <<< "$3"`
+	else
+		DOMAINNAME="$3"
+	fi
+
+	if ENTRY=`sed -n "s/^\(\"$1\";.*\|;\"$2\";.*\|;;\"$DOMAINNAME\";.*\)$/\1/p" "$PASSWORDSFILE"` && [ ! -z "$ENTRY" ]; then
+		#$DEBUGLOGGING && logMessage "Username entry: $ENTRY"
+		USERNAME=`sed -n 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;"\([^;]*\)";.*$|\1|p' <<< "$ENTRY"`
+		#$DEBUGLOGGING && logMessage "Username: $USERNAME"
+		echo "$USERNAME"
+		return 0
+	fi
+
+	# If we are in interactive mode ask the user for the username
+	if $INTERACTIVE; then
+		read -p 'Captive Portal username: ' USERNAME
+		echo "$USERNAME"
+		return 0
+	fi
+
+	return 1
+}
+
+# Gets the Captive Portal password, if any, from the Captive Portal password list
+# $1 = BSSID
+# $2 = SSID
+# $3 = hostname or URL
+# $4 = latitude
+# $5 = longitude
+getCaptivePortalPassword()
+{
+	PASSWORD=''
+	if [ ! -f "$PASSWORDSFILE" ]; then
+		logError 'Passwords file does not exist'
+		return 1
+	fi
+
+	# Incase an URL has been provided, take the domain part
+	if grep -iq "^[a-z]*://" <<< "$3"; then
+		DOMAINNAME=`sed 's|^[a-z]*://\([^/]*\)/.*|\1|I' <<< "$3"`
+	else
+		DOMAINNAME="$3"
+	fi
+
+	if ENTRY=`sed -n "s/^\(\"$1\";.*\|;\"$2\";.*\|;;\"$DOMAINNAME\";.*\)$/\1/p" "$PASSWORDSFILE"` && [ ! -z "$ENTRY" ]; then
+		#$DEBUGLOGGING && logMessage "Password entry: $ENTRY"
+		PASSWORD=`sed -n 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;"\(.*\)"$|\1|p' <<< "$ENTRY"`
+		#$DEBUGLOGGING && logMessage "Password: $PASSWORD"
+		echo "$PASSWORD"
+		return 0
+	fi
+
+	# If we are in interactive mode ask the user for the password
+	if $INTERACTIVE; then
+		read -p 'Captive Portal password: ' PASSWORD
+		echo "$PASSWORD"
+		ENTRY=''
+		[ ! -z "$1" ] && ENTRY="$1"
+		[ ! -z "$2" ] && ENTRY="$ENTRY;$2;"
+		[ ! -z "$DOMAINNAME" ] && ENTRY="$ENTRY;$DOMAINNAME;"
+		[ ! -z "$4" ] && ENTRY="$ENTRY;$4;"
+		[ ! -z "$5" ] && ENTRY="$ENTRY;$5;"
+		ENTRY="$ENTRY;N"
+		[ ! -z "$USERNAME" ] && ENTRY="$ENTRY;$USERNAME"
+		[ ! -z "$PASSWORD" ] &&ENTRY="$ENTRY;$PASSWORD"
+		echo "$ENTRY" >> "$PASSWORDSFILE"
+
+		return 0
+	fi
+
+	return 1
+}
+
+recheckCaptivePortal()
+{
+	if checkCaptivePortalPresence; then
+		# Ok, we were able to authenticate
+		logMessage 'Captive portal succesfully solved'
+		CAPTIVEPORTALSTATE='solved'
+		return 0
+	else
+		# Authentication failed
+		logMessage 'Captive portal still present'
+		CAPTIVEPORTALSTATE='failure'
+		return 1
+	fi
+}
+
+case "$1" in
+	'CONFIGURE')
+		while true; do
+			for SCRIPTNAME in $(run-parts --list "$LIBPATH/captiveportal.d"); do
+				. "$SCRIPTNAME" ''
+			done
+			SCRIPTNAME="$0"
+			break
+		done
+		;;
+	'SOLVE')
+		if $INTERFACEISUP && (! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) && [ ! -z "$IPADDRESS" ]; then
+			if [ "$PREVIOUSBSSID" = "$BSSID" ]; then
+				CAPTIVEPORTALTYPE=`getState 'CAPTIVEPORTALTYPE'`
+				CAPTIVEPORTALSTATE=`getState 'CAPTIVEPORTALSTATE'`
+			else
+				CAPTIVEPORTALTYPE='unknown'
+				CAPTIVEPORTALSTATE='unknown'
+			fi
+
+			if [ "$IPOVERDNSSTATE" != 'stopped' ] || [ "$VPNSTATE" != 'stopped' ]; then
+				if [ "$CAPTIVEPORTALSTATE" = 'none' ]; then
+					logMessage 'No Captive Portal is present'
+				elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
+					logMessage 'Captive Portal is solved'
+				elif [ "$CAPTIVEPORTALSTATE" = 'present' ]; then
+					logMessage 'Captive Portal is present'
+				elif [ "$CAPTIVEPORTALSTATE" = 'failure' ]; then
+					logMessage 'Captive Portal failure'
+				fi
+				return 1
+			fi
+
+			if [ -z "$CAPTIVEPORTALSTATE" ] || ([ "$CAPTIVEPORTALSTATE" != 'none' ] && [ "$CAPTIVEPORTALSTATE" != 'solved' ]); then
+				$INTERACTIVE && echo -n 'Solving Captive Portal'
+
+				getLocationHeader "$BODY" && [ ! -z "$LOCATION" ] &&
+					! $INTERACTIVE && $VERBOSELOGGING && logMessage "Captive Portal location: \"$LOCATION\""
+
+				[ ! -z "$LOCATION" ] &&
+					getBody "$LOCATION" true
+
+				if [ -z "$BODY" ]; then
+					# Failure
+					logError 'Empty body when retreiving Captive Portal'
+					CAPTIVEPORTALSTATE='failure'
+					setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"
+					storeState
+
+					return 1
+				else
+					! $INTERACTIVE && $VERBOSELOGGING && logMessage 'Captive portal present'
+					CAPTIVEPORTALSTATE='present'
+
+					for SCRIPTNAME in $(run-parts --list "$LIBPATH/captiveportal.d"); do
+						. "$SCRIPTNAME" SOLVE
+						[ "$CAPTIVEPORTALSTATE" = 'solved' ] &&
+							break
+					done
+					SCRIPTNAME="$0"
+
+					setState 'CAPTIVEPORTALTYPE' "$CAPTIVEPORTALTYPE"
+					setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"
+					storeState
+
+					return 0
+				fi
+			else
+				# No Captive portal
+				$VERBOSELOGGING && logMessage 'No Captive portal'
+				if $CAPTIVEPORTALLOGGING; then
+					rm "$CAPTIVEPORTALLOGPATH/CaptivePortal$TIMESTAMP-"*.log
+				fi
+
+				return 0
+			fi
+		fi
+		;;
+	'STATE')
+		# Checks for the existence of a Captive Portal
+		# Returns 0 if Captive Portal is present, else 1
+
+		if $INTERFACEISUP && (! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) && [ ! -z "$IPADDRESS" ]; then
+			if [ "$PREVIOUSBSSID" = "$BSSID" ]; then
+				CAPTIVEPORTALTYPE=`getState 'CAPTIVEPORTALTYPE'`
+				CAPTIVEPORTALSTATE=`getState 'CAPTIVEPORTALSTATE'`
+			else
+				CAPTIVEPORTALTYPE='unknown'
+				CAPTIVEPORTALSTATE='unknown'
+			fi
+
+			if [ "$IPOVERDNSSTATE" != 'stopped' ] || [ "$VPNSTATE" != 'stopped' ]; then
+				# If IP over DNS tunneling or VPN is active we use the previus state
+				if [ "$CAPTIVEPORTALSTATE" = 'none' ]; then
+					logMessage 'No Captive Portal is present'
+				elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
+					logMessage 'Captive Portal is solved'
+				elif [ "$CAPTIVEPORTALSTATE" = 'present' ]; then
+					logMessage 'Captive Portal is present'
+				elif [ "$CAPTIVEPORTALSTATE" = 'failure' ]; then
+					logMessage 'Captive Portal failure'
+				fi
+				return 1
+			fi
+
+			$INTERACTIVE && echo -n 'Detecting Captive Portal'
+
+			CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
+			$INTERACTIVE && echo -n '.'
+			if ! host -t A -W $TIMEOUT "$CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+				$INTERACTIVE && echo -n ' '
+				logError "Captive portal detection hostname $CAPTIVEPORTALDETECTIONHOSTNAME could not be resolved"
+				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+					CAPTIVEPORTALSTATE='failure'
+				fi
+			elif $INTERACTIVE && echo -n '.'; ! curlGet "$CAPTIVEPORTALDETECTIONURL"; then
+				# An error message is already logged in the curlGet function
+				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+					CAPTIVEPORTALSTATE='failure'
+				fi
+			elif $INTERACTIVE && echo -n '.'; [ -z "$BODY" ]; then
+				# Failure
+				$INTERACTIVE && echo -n ' '
+				logError "Empty body when detecting captive portal"
+				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+					CAPTIVEPORTALSTATE='failure'
+				fi
+			elif $INTERACTIVE && echo -n '.'; grep -q "$CAPTIVEPORTALDETECTIONRESPONSE" <<< "$BODY"; then
+				# No Captive portal
+				! $INTERACTIVE && $VERBOSELOGGING && logMessage "No captive portal detected"
+				if [ "$PREVIOUSBSSID" = "$BSSID" ] && [ ! -z "$CAPTIVEPORTALTYPE" ] &&
+					[ "$CAPTIVEPORTALTYPE" != 'none' ] && [ "$CAPTIVEPORTALTYPE" != 'unknown' ]; then
+					CAPTIVEPORTALSTATE='solved'
+					$INTERACTIVE && echo " $CAPTIVEPORTALTYPE, Solved"
+				else
+					CAPTIVEPORTALTYPE='none'
+					CAPTIVEPORTALSTATE='none'
+					$INTERACTIVE && echo ' None'
+				fi
+			else
+				# Captive portal present
+				logMessage 'Captive Portal present'
+
+				getLocationHeader "$BODY" && [ ! -z "$LOCATION" ] &&
+					! $INTERACTIVE && $VERBOSELOGGING && logMessage "Captive Portal location: \"$LOCATION\""
+
+				if $INTERACTIVE && echo -n '.'; [ "$PREVIOUSBSSID" != "$BSSID" ] || [ -z "$CAPTIVEPORTALTYPE" ] ||
+					[ "$CAPTIVEPORTALTYPE" = 'none' ]; then
+					CAPTIVEPORTALTYPE='unknown'
+				fi
+				CAPTIVEPORTALSTATE='present'
+				setState 'CAPTIVEPORTALTYPE' "$CAPTIVEPORTALTYPE"
+				setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"
+				storeState
+				return 0
+			fi
+		else
+			logError "Interface $INTERFACE not connected"
+			LOCATION=''
+			BODY=''
+			CAPTIVEPORTALTYPE='unknown'
+			CAPTIVEPORTALSTATE='unknown'
+		fi
+
+		setState 'CAPTIVEPORTALTYPE' "$CAPTIVEPORTALTYPE"
+		setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"
+		storeState
+		return 1
+		;;
+esac
+
+return 1

@@ -1,0 +1,163 @@
+#!/bin/bash
+
+RASPBIANHOST='downloads.raspberrypi.org'
+RASPBIANLATESTURL="https://$RASPBIANHOST/raspbian_lite_latest"
+
+# Check if this script supports the OS
+if [ `uname` != 'Linux' ] && [ `uname` != 'Darwin' ]; then
+	echo 'This script is written for Linux or OS X'
+	exit
+fi
+
+if [ `uname` = 'Darwin' ] || [ "$CONTINUE" != 'true' ]; then
+	echo 'Welcome! This script will download the latest version of Raspbian Lite, configures WiFi and enables SSH so you can connect to it remotely'
+	echo
+
+	#[ `uname` = 'Darwin' ] && SSID=`/System/Library/PrivateFrameworks/Apple80211.framework/Versions/A/Resources/airport -I | sed -n 's|^ *SSID: \(.*\)$|\1|p'`
+	if [ `uname` = 'Linux' ] && [ -x /sbin/wpa_cli ]; then
+		SSID=`/sbin/wpa_cli status | sed -n 's|^ssid=\(.*\)$|\1|p'`
+		read -e -p 'Your WiFi network name: ' -e -i "$SSID" 'SSID'
+	else
+		read -e -p 'Your WiFi network name: ' 'SSID'
+	fi
+	if [ `uname` = 'Linux' ] && [ -x /usr/bin/wpa_passphrase ]; then
+		echo -e -n 'Your WiFi network passord: '
+		PSK=`wpa_passphrase "$SSID" | sed -n 's|^\tpsk=\([0-9a-f]*\)$|\1|p'`
+	else
+		read -e -p 'Your WiFi password: ' 'PSK'
+		PSK="\"$PSK\""
+	fi
+	echo
+
+	RASPBIANIMAGEZIP=`ls -tr *raspbian-stretch-lite.zip 2> /dev/null | tail -n 1`
+	if host -t A "$RASPBIANHOST" > /dev/null; then
+		[ ! -z "$RASPBIANIMAGEZIP" ] &&
+			echo 'Check if downloaded Raspbian Lite is the latest version' ||
+			echo 'Downloading latest Raspbian Lite'
+		# Check for latest Raspbian Lite image in current dir
+		RASPBIANIMAGEZIPURL=`curl -4 -Is "$RASPBIANLATESTURL" | sed -n 's|^Location: \(.*\)$|\1|p' | tr -d '\r'`
+		if [ -z "$RASPBIANIMAGEZIPURL" ]; then
+			echo 'Failed to retrieve latest Raspian URL'
+			exit
+		fi
+
+		RASPBIANIMAGEZIP=`echo "$RASPBIANIMAGEZIPURL" | sed "s|^.*/||"`
+		if [ ! -f "$RASPBIANIMAGEZIP" ]; then
+			# If not available download latest Raspbian Lite
+			echo 'Latest Raspbian Lite is not yet downloaded, downloading...'
+			curl -4 -L "$RASPBIANIMAGEZIPURL" > "$RASPBIANIMAGEZIP"
+		else
+			echo 'Latest Raspbian Lite is already downloaded'
+		fi
+	fi
+
+	RASPBIANIMAGE=`echo "$RASPBIANIMAGEZIP" | sed 's|\.zip$|.img|'`
+	if [ ! -f "$RASPBIANIMAGE" ]; then
+		if ! unzip "$RASPBIANIMAGEZIP" "$RASPBIANIMAGE"; then
+			echo 'Unzipping the Raspbian Lite archive failed. Exiting script'
+			exit 1
+		fi
+	fi
+	echo
+
+	if [ `uname` = 'Linux' ] && [ "$(id -u)" -ne 0 ]; then
+		echo 'You should now run this installation script as root'
+		sudo SSID="$SSID" PSK="$PSK" RASPBIANIMAGE="$RASPBIANIMAGE" CONTINUE='true' "$0"
+		exit
+	fi
+fi
+
+[ `uname` = 'Linux' ] && SDCARD=`ls -tr /dev/sd* 2> /dev/null | grep "^/dev/sd[a-z]*$" | tail -n 1`
+[ `uname` = 'Darwin' ] && SDCARD=`ls -tr /dev/disk* 2> /dev/null | grep "^/dev/disk[0-9]*$" | tail -n 1`
+if [ ! -z "$SDCARD" ]; then
+	echo
+	echo "Your last inserted device is $SDCARD, please validate that this is your Micro SD card."
+	echo 'Press D to detect an other device, any other key to overwrite your Micro SD card or CTRL-C to terminate the script'
+	read -n 1 CHOICE
+fi
+
+# Detect Micro SD card
+if [ -z "$SDCARD" ] || [ "$CHOICE" = 'd' ] || [ "$CHOICE" = 'D' ]; then
+	echo
+	echo 'Detecting Micro SD card, make sure the card is NOT attached to your system'
+	read -n 1 -p 'Press any key to continue'
+	[ `uname` = 'Linux' ] && DISKUTILLIST1=`ls -tr /dev/sd* 2> /dev/null | grep "^/dev/sd[a-z]*$"`
+	#[ `uname` = 'Darwin' ] && DISKUTILLIST1=`diskutil list | grep '^/dev/'`
+	[ `uname` = 'Darwin' ] && DISKUTILLIST1=`ls -tr /dev/disk* 2> /dev/null | grep "^/dev/disk[0-9]*$"`
+	echo 'Now attach the Micro SD card to your system'
+	read -n 1 -p 'Press any key to continue'
+	# Wait a couple of seconds for the system
+	sleep 2
+	[ `uname` = 'Linux' ] && DISKUTILLIST2=`ls -tr /dev/sd* 2> /dev/null | grep "^/dev/sd[a-z]*$"`
+	#[ `uname` = 'Darwin' ] && DISKUTILLIST2=`diskutil list | grep '^/dev/'`
+	[ `uname` = 'Darwin' ] && DISKUTILLIST1=`ls -tr /dev/disk* 2> /dev/null | grep "^/dev/disk[0-9]*$"`
+
+	SDCARD=`diff <(echo "$DISKUTILLIST1") <(echo "$DISKUTILLIST2") | grep '^> ' | sed 's|^> ||'`
+	if [ -z "$SDCARD" ]; then
+		echo 'No Micro SD card detected'
+		exit 1
+	fi
+
+	# Maybe some other validations? Like how long the device has been atached, should be less than 10 seconds
+
+	echo "Detected $SDCARD to be your Micro SD card, please validate."
+	echo 'Press any key to overwrite your Micro SD card or CTRL-C to terminate the script'
+	read
+fi
+
+# Use rdisk on OS X for improved performance
+[ `uname` = 'Darwin' ] && SDCARD=`echo "$SDCARD" | sed 's|/dev/disk|/dev/rdisk|'`
+
+# Unmount the Micro SD card
+echo "Unmounting $SDCARD"
+[ `uname` = 'Linux' ] && umount "$SDCARD"* 2> /dev/null
+[ `uname` = 'Darwin' ] && diskutil unmountDisk "$SDCARD"
+
+# Copy Raspbian Lite to your Micro SD card
+echo 'Copying Raspbian Lite to your Micro SD card'
+[ `uname` = 'Linux' ] &&
+	dd bs=32M if="$RASPBIANIMAGE" of="$SDCARD" conv=sync
+if [ `uname` = 'Darwin' ]; then
+	if [ `id | grep "80(admin)" > /dev/null` ]; then
+		sudo dd bs=1m if="$RASPBIANIMAGE" of="$SDCARD" conv=sync
+	else
+		echo 'You have to switch to an adminstrative user'
+		read -p 'Admin user name: ' ADMINUSER
+		#su $ADMINUSER -c "unzip -p \"$RASPBIANIMAGEZIP\" \"$RASPBIANIMAGE\" | sudo dd bs=1m of=\"$SDCARD\" conv=sync"
+		su "$ADMINUSER" -c "sudo dd bs=1m if=\"$RASPBIANIMAGE\" of=\"$SDCARD\" conv=sync"
+	fi
+fi
+sleep 2
+
+if [ `uname` = 'Linux' ]; then
+	MOUNTPOINT='/mnt/boot'
+	mkdir -p "$MOUNTPOINT"
+	mount "${SDCARD}1" "$MOUNTPOINT"
+elif [ `uname` = 'Darwin' ]; then
+       	diskutil unmountDisk "$SDCARD"
+	diskutil mount "${SDCARD}s1"
+	MOUNTPOINT='/Volumes/boot'
+fi
+
+# Configure WIFI
+cat << EOF > "$MOUNTPOINT/wpa_supplicant.conf"
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=US
+
+network={
+	ssid="$SSID"
+	psk="$PSK"
+}
+EOF
+
+# Enable SSH
+touch "$MOUNTPOINT/ssh"
+
+[ `uname` = 'Linux' ] &&
+	umount "$MOUNTPOINT" &&
+	rmdir "$MOUNTPOINT"
+[ `uname` = 'Darwin' ] &&
+	diskutil eject "$SDCARD"
+
+echo 'Remove your Micro SD card, put it in your Raspberry Pi and boot. Have fun!'

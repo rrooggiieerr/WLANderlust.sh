@@ -89,7 +89,9 @@ Any GPS which is supported by GPSd should work.
 Create a fresh installation of Raspbian Stretch Lite on a Micro SD card, login
 as user pi and download the WLANderlust archive.
 
-`curl -L 'https://github.com/rrooggiieerr/WLANderlust/archive/master.tar.gz' -o WLANderlust.tar.gz`
+```
+curl -L 'https://github.com/rrooggiieerr/WLANderlust/archive/master.tar.gz' -o WLANderlust.tar.gz
+```
 
 To configure your Raspbian as a roaming WiFi repeater Unpack the WLANderlust
 archive and execute the `installWLANderlust` installation script and follow the

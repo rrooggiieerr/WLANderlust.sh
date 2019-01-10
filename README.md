@@ -11,7 +11,7 @@ work. The Captive Portal solving should work on all Unices.
 - Logs in to Fon routers with Fon credentials
 - Configures firewall and NAT
 - Configures encrypted WiFi spots
-- Supports IP over DNS routing when a Captive Portal can not be solved
+- Supports IP over DNS routing for situations where internet access is obstructed, but DNS queries are allowed.
 - IP over SSH VPN support
 
 ### Feature wishlist:

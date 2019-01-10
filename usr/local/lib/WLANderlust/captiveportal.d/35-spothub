@@ -1,0 +1,76 @@
+# WLANderlust
+#
+# This script handles Captive Portal login for SpotHub.io routers
+#
+# I think I have seen this type of router only once
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+# http://spothub.io/
+#
+# Rogier van Staveren, January 2019, initial development release
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+submitFormAsIs()
+{
+	FORM="$1"
+	FORMACTION=`sed -n "s|^.*<form [^>]*action=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|Ip" <<< "$FORM"`
+	FORMACTION=`expandLocation "$FORMACTION" "$LOCATION"`
+	POSTDATA=''
+
+	# Loop trough the inputs and build the post data
+	INPUTS=`echo "$FORM" | sed 's|>|&\n|g' | sed -n 's|.*\(<input [^>]*>\)$|\1|Ip'`
+	OIFS="$IFS"
+	IFS='
+'
+	for INPUT in $INPUTS; do
+		INPUTNAME=`sed -n "s|.* name=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
+		INPUTVALUE=`sed -n "s|.* value=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
+		[ ! -z "$POSTDATA" ] && POSTDATA="$POSTDATA&"
+		POSTDATA="$POSTDATA$INPUTNAME=$INPUTVALUE"
+	done
+	IFS="$OIFS"
+
+	curlPost "$FORMACTION" "$POSTDATA" &&
+		return 0
+
+	return 1
+}
+
+if echo "$BODY" | tr -d '\n\r' | grep -qi "spothub.io"; then
+	logMessage 'SpotHub.io Captive Portal'
+	CAPTIVEPORTALTYPE='SpotHub.io'
+
+	FORM=`echo "$BODY" | tr -d '\n\r' | sed 's|\(</form>\)|\1\n|Ig' | sed -n 's|^.*\(<form name="redirect"[^>]*>.*</form>\)$|\1|Ip'`
+	if ! submitFormAsIs "$FORM"; then
+		CAPTIVEPORTALSTATE='failure'
+		return
+	fi
+
+	FORM=`echo "$BODY" | tr -d '\n\r' | sed 's|\(</form>\)|\1\n|Ig' | sed -n 's|^.*\(<form name="terms-only-login"[^>]*>.*</form>\)$|\1|Ip'`
+	if [ ! -z "$FORM" ]; then
+		if ! submitFormAsIs "$FORM"; then
+			CAPTIVEPORTALSTATE='failure'
+			return
+		fi
+
+		FORM=`echo "$BODY" | tr -d '\n\r' | sed 's|\(</form>\)|\1\n|Ig' | sed -n 's|^.*\(<form[^>]*>.*</form>\)$|\1|Ip'`
+		if ! submitFormAsIs "$FORM"; then
+			CAPTIVEPORTALSTATE='failure'
+			return
+		fi
+	fi
+
+	CAPTIVEPORTALSTATE='failure'
+fi

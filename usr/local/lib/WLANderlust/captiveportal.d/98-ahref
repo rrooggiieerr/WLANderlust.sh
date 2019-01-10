@@ -1,0 +1,51 @@
+# WLANderlust
+#
+# Captive portal detection for 'click trough' <a href= based Captive Portals
+#
+# <a href='s are in almost all pages, so this is realy a lucky shot.
+# That's why this script is run last
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+#
+# Rogier van Staveren, January 2019, initial development release
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+if grep -i -q '<a .*href="' <<< "$BODY"; then
+	# Get all the <a href tags which are no anchor
+	AHREFS=`echo "$BODY" | tr -d '\n\r' | sed 's|\(</a>\)|\1\x0D|I' | sed -n "s|^.*\(<a [^>]*href=[\"'][^\"'#][^\"'#]*[\"'][^>]*>.*</a>\).*$|\1|Ip"`
+	OIFS="$IFS"
+	IFS=$'\n'
+	for AHREF in $AHREFS; do
+		HREF=`echo "$AHREF" | tr -d '\n\r' | sed 's|.*<a [^>]*href="\([^"]*\)".*</a>.*|\1|'`
+		$DEBUGLOGGING && logMessage "A HREF detected: \"$HREF\""
+		$DEBUGLOGGING && logMessage "curlGet $HREF"
+	done
+	IFS="$OIFS"
+
+	logMessage 'A HREF based captive portal detected'
+	CAPTIVEPORTALTYPE='a href'
+
+	# Check if Captive Portal has been resolved
+	curlGet "$CAPTIVEPORTALDETECTIONURL"
+	if ! grep -q 'HTTP/1.1 204 No Content' <<< "$BODY"; then
+		# Authentication failed
+		logError 'Captive portal still present'
+		CAPTIVEPORTALSTATE='failure'
+	else
+		# Ok, we were able to authenticate
+		logMessage 'Captive portal succesfully solved'
+		CAPTIVEPORTALSTATE='solved'
+	fi
+fi

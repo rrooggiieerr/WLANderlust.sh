@@ -1,0 +1,58 @@
+# WLANderlust
+#
+# This script handles Captive Portal login for Wireless Internet Service Provider roaming (WISPr)
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+# https://en.wikipedia.org/wiki/WISPr
+# Perl implementation: https://github.com/matsuu/auwifispot-client/blob/master/wispr_login.pl
+#
+# Rogier van Staveren, January 2019, initial development release
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+                
+# Script doesn't work yet, return for now
+return 1
+
+if WISPXML=`echo "$BODY" | tr -d '\n\r' | sed -n 's|^.*\(<WISPAccessGatewayParam.*</WISPAccessGatewayParam>\).*$|\1|p'` && [ ! -z "$WISPXML" ]; then
+	logMessage 'WISPr Captive Portal'
+	#ToDo What is WISPAccessGateway and how does it work?
+
+	if NEXTURL=`echo "$WISPXML" | sed -n 's|^.*<Proxy>.*<NextURL>\(.*\)</NextURL>.*</Proxy>.*$|\1|p'` && [ ! -z "$NEXTURL" ]; then
+		# Proxy > NextURL
+		# Remove the CDATA tag, if any
+		if `echo $NEXTURL | grep "^<\!\[CDATA\["`; then
+			NEXTURL=`echo $NEXTURL | sed 's|^<!\[CDATA\[\(.*\)\]\]>$|\1|'`
+		else
+			NEXTURL=`echo $NEXTURL | sed 's|&amp;|&|g'`
+		fi
+		echo "$NEXTURL"
+		curlGet "$NEXTURL"
+		WISPXML=`echo "$BODY" | tr -d '\n\r' | sed -n 's|^.*\(<WISPAccessGatewayParam.*</WISPAccessGatewayParam>\).*$|\1|p'`
+	fi
+
+	if LOGINURL=`echo "$WISPXML" | sed -n 's|^.*<Redirect>.*<LoginURL>\(.*\)</LoginURL>.*</Redirect>.*$|\1|p'` && [ ! -z "$LOGINURL" ]; then
+		# Redirect > LoginURL
+		if `echo $LOGINURL | grep "^<\!\[CDATA\["`; then
+			LOGINURL=`echo $LOGINURL | sed 's|^<!\[CDATA\[\(.*\)\]\]>$|\1|'`
+		else
+			LOGINURL=`echo $LOGINURL | sed 's|&amp;|&|g'`
+		fi
+		echo "$LOGINURL"
+		curlGet "$LOGINURL"
+		WISPXML=`echo "$BODY" | tr -d '\n\r' | sed -n 's|^.*\(<WISPAccessGatewayParam.*</WISPAccessGatewayParam>\).*$|\1|p'`
+	#else
+	#	CAPTIVEPORTALTYPE='WISPAccessGateway'
+	#	CAPTIVEPORTALSTATE='failure'
+	fi
+fi

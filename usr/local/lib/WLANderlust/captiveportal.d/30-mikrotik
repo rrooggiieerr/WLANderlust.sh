@@ -1,0 +1,82 @@
+# WLANderlust
+#
+# This script handles Captive Portal login for Mikrotik routers
+#
+# The Mikrotik routers use a login form with some client side JavaScript MD5 encryption
+# The MD5 part still needs to be solved
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+# https://wiki.mikrotik.com/wiki/HotSpot_external_login_page
+#
+# Rogier van Staveren, January 2019, initial development release
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+if echo "$BODY" | tr -d '\n\r' | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; then
+	logMessage 'Mikrotik Captive Portal'
+	CAPTIVEPORTALTYPE='Mikrotik'
+
+	# Remove comments
+	CLEANBODY=`echo "$BODY" | tr -d '\n\r' | sed 's|\(-->\)|\1\n|g' | sed 's|<!--.*-->||'`
+	FORM=`echo "$CLEANBODY" | sed 's|\(</form>\)|\1\n|Ig' | sed -n 's|^.*\(<form name="login"[^>]*>.*</form>\)$|\1|Ip'`
+
+	USERNAME=`echo "$FORM" | sed -n 's|^.*<input name="username"[^>]*value=["'\'']\([^"'\'']*\)["'\''][^>]*>.*$|\1|p'`
+	if [ -z "$USERNAME" ]; then
+		getCaptivePortalUsername "$BSSID" "$SSID" "$LOCATION"
+	fi
+
+	PASSWORD=`echo "$FORM" | sed -n 's|^.*<input name="password"[^>]*value=["'\'']\([^"'\'']*\)["'\''][^>]*>.*$|\1|p'`
+	if [ -z "$PASSWORD" ]; then
+		 getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"
+	fi
+
+	if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+		logError "No login credentials for \"$BSSID\" \"$SSID\" \"$LOCATION\""
+		CAPTIVEPORTALSTATE='failure'
+		return
+	fi
+
+	#CHAPID=`echo "$BODY" | sed -n "s|^.*hexMD5('\(.*\)' +.*).*$|\1|p"`
+	#CHAPCHALLENGE=`echo "$BODY" | sed -n "s|^.*hexMD5(.*+ '\(.*\)').*$|\1|p"`
+	#ToDo hedMD5 password
+	PASSWORD="$CHAPID$PASSWORD$CHAPCHALLENGE"
+
+	FORM=`echo "$CLEANBODY" | sed 's|\(</form>\)|\1\n|Ig' | sed -n 's|^.*\(<form name="sendin"[^>]*>.*</form>\)$|\1|Ip'`
+	FORMACTION=`echo "$FORM" | sed -n 's|^.*<form [^>]*action=["'\'']\([^"'\'']*\)["'\''][^>]*>.*$|\1|Ip'`
+	FORMACTION=`expandLocation "$FORMACTION" "$LOCATION"`
+
+	# Loop trough the inputs and build the post data
+	INPUTS=`echo "$FORM" | sed 's|>|&\n|g' | sed -n 's|.*\(<input [^>]*>\)$|\1|Ip'`
+	OIFS="$IFS"
+	IFS='
+'
+	for INPUT in $INPUTS; do
+		INPUTNAME=`echo "$INPUT" | sed -n 's|.* name=["'\'']\([^"'\'']*\)["'\''].*|\1|Ip'`
+		case "$INPUTNAME" in
+			username) INPUTVALUE="$USERNAME" ;;
+			password) INPUTVALUE="$PASSWORD" ;;
+			*) INPUTVALUE=`echo "$INPUT" | sed -n 's|.* value=["'\'']\([^"'\'']*\)["'\''].*|\1|Ip'` ;;
+		esac
+		[ ! -z "$POSTDATA" ] && POSTDATA="$POSTDATA&"
+		POSTDATA="$POSTDATA$INPUTNAME=$INPUTVALUE"
+	done
+	IFS="$OIFS"
+	echo "$POSTDATA"
+
+	#if curlPost "$FORMACTION" "$POSTDATA"; then
+	#	CAPTIVEPORTALSTATE='failure'
+	#else
+		CAPTIVEPORTALSTATE='failure'
+	#fi
+fi

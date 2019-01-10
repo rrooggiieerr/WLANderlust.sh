@@ -1,0 +1,33 @@
+# WLANderlust
+#
+# Captive portal detection
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+#
+# Rogier van Staveren, January 2019, initial release
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+logMessage 'Unknown captive portal'
+CAPTIVEPORTALTYPE='other'
+
+# Check if Captive Portal has been resolved
+if recheckCaptivePortal; then
+	logMessage 'Captive portal still present'
+	CAPTIVEPORTALSTATE='present'
+else
+	# Ok, the Captive Portal seems to be resolved by itself, it probaly was just a splash screen
+	logMessage 'Captive portal resolved by itself'
+	CAPTIVEPORTALSTATE='solved'
+fi

@@ -1,0 +1,23 @@
+# WLANderlust
+#
+# This script handles Captive Portal login for WaveLock routers
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+# http://waveloc.com/wifi-hotspot-en/
+#
+# Rogier van Staveren, January 2019, placeholder for future implementation
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+return 1

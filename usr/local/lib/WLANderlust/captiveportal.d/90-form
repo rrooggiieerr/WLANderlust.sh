@@ -1,0 +1,172 @@
+# WLANderlust
+#
+# Captive portal detection for form based captive portals
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+#
+# Rogier van Staveren, January 2019, initial release
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+if grep -i -q '<form ' <<< "$BODY"; then
+	# Remove comments
+	FORMS=`tr -d '\n\r' <<< "$BODY" | sed 's|\(-->\)|\1\n|g' | sed 's|<!--.*-->||'`
+	#FORMS=`sed 's|\(</form>\)|\1\n|Ig' <<< "$FORMS" | sed -n "s|^.*\(<form [^>]*action=[\"'][^\"']*[\"'][^>]*>.*</form>\)$|\1|Ip"`
+	FORMS=`sed 's|\(</form>\)|\1\n|Ig' <<< "$FORMS" | sed -n 's|^.*\(<form .*</form>\)$|\1|Ip'`
+
+	OIFS="$IFS"
+	IFS='
+'
+	for FORM in $FORMS; do
+		# Get form action
+		FORMACTION=`sed -n "s|^.*<form [^>]*action=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|Ip" <<< "$FORM"`
+		[ -z "$FORMACTION" ] &&
+			FORMACTION="$LOCATION" ||
+			FORMACTION=`expandLocation "$FORMACTION" "$LOCATION"`
+		ONSUBMIT=`sed -n "s|^.*<form [^>]*onSubmit=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|Ip" <<< "$FORM"`
+		logMessage "Form action: \"$FORMACTION\""
+		if [ ! -z "$ONSUBMIT" ]; then
+			logMessage 'This form uses JavaScript!'
+		fi
+
+		CONTINUE=false
+		INPUTS=`sed 's|>|&\n|g' <<< "$FORM" | sed -n 's|.*\(<input [^>]*>\)$|\1|Ip'`
+		SELECTS=`sed 's|\(</select>\)|\1\n|Ig' <<< "$FORM" | sed -n 's|.*\(<select .*\)$|\1|Ip'`
+
+		TEXTINPUTCOUNTER=0
+		EMPTYTEXTINPUTCOUNTER=0
+		PASSWORDINPUTCOUNTER=0
+		EMPTYPASSWORDINPUTCOUNTER=0
+		HIDDENINPUTCOUNTER=0
+		EMPTYHIDDENINPUTCOUNTER=0
+		CHECKBOXINPUTCOUNTER=0
+		SELECTCOUNTER=0
+		SUBMITCOUNTER=0
+
+		CURLFORMARGUMENTS=''
+		POSTDATA=''
+		for INPUT in $INPUTS; do
+			INPUTTYPE=`sed -n "s|.* type=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
+			INPUTNAME=`sed -n "s|.* name=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
+			INPUTVALUE=`sed -n "s|.* value=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
+
+			if [ -z "$INPUTTYPE" ]; then
+				$DEBUGLOGGING && logError 'Empty INPUTTYPE'
+				INPUTTYPE='text'
+			fi
+
+			case "$INPUTTYPE" in
+			'text')
+				TEXTINPUTCOUNTER=$(($TEXTINPUTCOUNTER + 1))
+				if [ -z "$INPUTVALUE" ]; then
+					EMPTYTEXTINPUTCOUNTER=$(($EMPTYTEXTINPUTCOUNTER + 1))
+				fi
+				;;
+			'password')
+				PASSWORDINPUTCOUNTER=$(($PASSWORDINPUTCOUNTER + 1))
+				if [ -z "$INPUTVALUE" ]; then
+					EMPTYPASSWORDINPUTCOUNTER=$(($EMPTYPASSWORDINPUTCOUNTER + 1))
+				fi
+				;;
+			'hidden')
+				HIDDENINPUTCOUNTER=$(($HIDDENINPUTCOUNTER + 1))
+				if [ -z "$INPUTVALUE" ]; then
+					EMPTYHIDDENINPUTCOUNTER=$(($EMPTYHIDDENINPUTCOUNTER + 1))
+				fi
+				;;
+			'submit')
+				SUBMITCOUNTER=$(($SUBMITCOUNTER + 1))
+				;;
+			'reset')
+				# We ignore reset buttons
+				INPUTNAME=''
+				INPUTVALUE=''
+				;;
+			'checkbox')
+				CHECKBOXINPUTCOUNTER=$(($CHECKBOXINPUTCOUNTER + 1))
+				INPUTVALUE="$INPUTNAME"
+				;;
+			*)
+				logMessage "Unsupported INPUTTYPE=$INPUTTYPE"
+				logMessage "$INPUT"
+				;;
+			esac
+
+			if [ ! -z "$INPUTNAME" ]; then
+				CURLFORMARGUMENTS="$CURLFORMARGUMENTS -F \"$INPUTNAME=$INPUTVALUE\""
+				[ ! -z "$POSTDATA" ] && POSTDATA="$POSTDATA&"
+				POSTDATA="$POSTDATA$INPUTNAME=$INPUTVALUE"
+			fi
+		done
+
+		for SELECT in $SELECTS; do
+			if grep -i -q "language" <<< "$SELECT"; then
+				logMessage "This seems to be a language select form, we can't login with this one"
+				CONTINUE=true
+				continue
+			fi
+			OPTIONS=`sed 's|\(</option>\)|\1\n|g' <<< "$SELECT" | sed -n 's|.*\(<option .*</option>\)$|\1|Ip'`
+			SELECTCOUNTER=$(($SELECTCOUNTER + 1))
+		done
+
+		$CONTINUE && continue
+
+		$DEBUGLOGGING && logMessage "TEXTINPUTCOUNTER=$TEXTINPUTCOUNTER EMPTYTEXTINPUTCOUNTER=$EMPTYTEXTINPUTCOUNTER"
+		$DEBUGLOGGING && logMessage "PASSWORDINPUTCOUNTER=$PASSWORDINPUTCOUNTER EMPTYPASSWORDINPUTCOUNTER=$EMPTYPASSWORDINPUTCOUNTER"
+		$DEBUGLOGGING && logMessage "HIDDENINPUTCOUNTER=$HIDDENINPUTCOUNTER EMPTYHIDDENINPUTCOUNTER=$EMPTYHIDDENINPUTCOUNTER"
+		$DEBUGLOGGING && logMessage "SUBMITCOUNTER=$SUBMITCOUNTER"
+		$DEBUGLOGGING && logMessage "CHECKBOXINPUTCOUNTER=$CHECKBOXINPUTCOUNTER"
+		$DEBUGLOGGING && logMessage "POSTDATA=$POSTDATA"
+
+		if [ $TEXTINPUTCOUNTER -eq 0 ] && [ $PASSWORDINPUTCOUNTER -eq 0 ] && [ $EMPTYHIDDENINPUTCOUNTER -eq 0 ] && [ $CHECKBOXINPUTCOUNTER -eq 0 ] && [ $SELECTCOUNTER -eq 0 ] && [ $SUBMITCOUNTER -eq 1 ]; then
+			logMessage "This seems to be some kind of continue/proceed kind of form"
+			curlPost "$FORMACTION" "$POSTDATA"
+			getLocationHeader "$BODY" "$LOCATION"
+			getBody "$LOCATION" true
+		elif [ $TEXTINPUTCOUNTER -eq 0 ] && [ $PASSWORDINPUTCOUNTER -eq 0 ] && [ $EMPTYHIDDENINPUTCOUNTER -eq 0 ] && [ $CHECKBOXINPUTCOUNTER -eq 1 ] && [ $SELECTCOUNTER -eq 0 ] && [ $SUBMITCOUNTER -eq 1 ]; then
+			logMessage "This seems to be some kind of confirm/agree kind of form"
+			curlPost "$FORMACTION" "$POSTDATA"
+			getLocationHeader "$BODY" "$LOCATION"
+			getBody "$LOCATION" true
+		elif [ $TEXTINPUTCOUNTER -eq 0 ] && [ $PASSWORDINPUTCOUNTER -eq 0 ] && [ $HIDDENINPUTCOUNTER -eq 0 ]; then
+			logMessage "This seems to be an empty form, we can't login with this one"
+		elif [ $EMPTYTEXTINPUTCOUNTER -ge 1 ] && [ $EMPTYPASSWORDINPUTCOUNTER -ge 1 ]; then
+			logMessage 'This seems to be a typical empty username/password form'
+			CAPTIVEPORTALTYPE='username/password form'
+			CAPTIVEPORTALSTATE='failure'
+			#ToDo Get username/password from configuration file
+		elif [ $EMPTYTEXTINPUTCOUNTER -eq 0 ] && [ $EMPTYPASSWORDINPUTCOUNTER -ge 1 ]; then
+			logMessage 'This seems to be a typical empty password form'
+			CAPTIVEPORTALTYPE='password form'
+			getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"
+			#echo $PASSWORD
+			#recheckCaptivePortal && IFS="$OIFS" && break
+			CAPTIVEPORTALSTATE='failure'
+		elif [ $EMPTYPASSWORDINPUTCOUNTER -eq 0 ] && [ $EMPTYTEXTINPUTCOUNTER -ge 1 ]; then
+			logMessage 'Form based captive portal detected'
+			logMessage 'This seems to be a typical empty password form'
+			CAPTIVEPORTALTYPE='password form'
+			CAPTIVEPORTALSTATE='failure'
+			#ToDo Get password from configuration file
+		else
+			logMessage 'Give the following cURL a try:'
+			logMessage "curl $CURLFORMARGUMENTS '$FORMACTION'"
+			LASTLOCATION="$LOCATION"
+			recheckCaptivePortal && IFS="$OIFS" && break
+			LOCATION="$LASTLOCATION"
+		fi
+		#ToDo Confirm/agree form
+	done
+	IFS="$OIFS"
+fi

@@ -1,0 +1,493 @@
+#!/bin/bash
+#
+if [ "$(id -u)" -ne 0 ]; then
+	echo 'You should run this installation script as root!'
+	exit 1
+fi
+
+while [ ! -z "$1" ]; do
+	PARAM="$1"
+	case $PARAM in
+		--update)
+			INSTALLATIONSTATE='WLANderlust'
+			;;
+	esac
+	shift
+done
+
+# Check if we can write in the current directory to store the installation state
+if ! `touch '.installWLANderlust.state'`; then
+	echo 'Unable to write installation state file in current directory'
+	exit 1
+fi
+
+if [ -z "$INSTALLATIONSTATE" ]; then
+	INSTALLATIONSTATE=`cat '.installWLANderlust.state'`
+fi
+if [ -z "$INSTALLATIONSTATE" ]; then
+	INSTALLATIONSTATE='introduction'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+ISREMOTELOGIN=`pstree -ps $$ | grep -q ssh && echo true || echo false`
+
+# Introduction
+if [ "$INSTALLATIONSTATE" = 'introduction' ]; then
+	clear
+	echo -n -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Welcome to the installation script of WLANderlust!
+
+This script will configure your freshly installed Raspbian to be a roaming
+Access Point with advanced features. Please read the README file for more
+details.
+
+\e[1mPress Q to quit or any other key to proceed\e[0m '
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+	INSTALLATIONSTATE='raspbianupdate'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+# Raspbian update
+if [ "$INSTALLATIONSTATE" = 'raspbianupdate' ]; then
+	clear
+	echo -n -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Upgrade Raspbian
+
+The first thing that needs to be done is to upgrade all the software packages of
+your freshly installed Raspbian to their latest versions.
+
+\e[1mPress Q to quit, S to skip or any other key to update your Raspbian installation\e[0m '
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		echo
+		echo
+		apt-get update
+		apt-get -y dist-upgrade
+	fi
+
+	INSTALLATIONSTATE='hostaccesspoint'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+#ToDo General settings
+# Hostname
+
+#ToDo Security!!!
+# Change user pi password
+# Configure & enable SSHd
+
+# Host Access Point Configuration
+# I basically automated these instructions: https://www.raspberrypi.org/documentation/configuration/wireless/access-point.md
+if [ "$INSTALLATIONSTATE" = 'hostaccesspoint' ]; then
+	clear
+	echo -n -e "\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Host Access Point configuration
+
+We're now going to configure your device as an Access Point, so you can
+connect to it and continue the installation of WLANderlust from there.
+
+We're going to detect the WiFi interface you want to use for the Access Point,
+to make this possible it's easiest to remove the WiFi interfaces you don't want
+to be configured as an Access Point now.
+
+\e[1mPress Q to quit, S to skip or any other key to configure the Host Access Point\e[0m "
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		if [ -f /etc/hostapd/hostapd.conf ]; then
+			# Read the current Host AP configuration
+			HOSTAPDCONF=`cat /etc/hostapd/hostapd.conf`
+			HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' <<< "$HOSTAPDCONF"`
+			HOSTAPSSID=`sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$HOSTAPDCONF"`
+			HOSTAPPASSPHRASE=`sed -n 's|^wpa_passphrase=\(.*\)$|\1|p' <<< "$HOSTAPDCONF"`
+		else
+			# Generate a somewhat unique name for the Host AP
+			HOSTAPSSID='WLANderlust_'`shuf -i 1000-9999 -n 1`
+		fi
+
+		echo
+		echo
+		echo 'Available interfaces for your Host Access Point'
+		mapfile -t WLANINTERFACES < <(ifconfig -a | sed -n 's|^\(wlan[0-9]*\):.*|\1|p')
+		CHOICE=''
+		for I in ${!WLANINTERFACES[@]}; do
+			WLANINTERFACE=${WLANINTERFACES[$I]}
+			printf '%2d %s\n' "$I" "$WLANINTERFACE"
+			if [ "${WLANINTERFACES[$I]}" = "$HOSTAPINTERFACE" ]; then
+				CHOICE="$I"
+			fi
+		done
+		while true; do
+			read -p 'Select the interface you would like to use: ' -e -i "$CHOICE" 'CHOICE'
+			echo -n "$CHOICE" | egrep -q "^[0-9]+$" && [ ! -z "${WLANINTERFACES[$CHOICE]}" ] && break
+		done
+		HOSTAPINTERFACE="${WLANINTERFACES[$CHOICE]}"
+		HOSTAPMACADDRESS=`ifconfig "$HOSTAPINTERFACE" | sed -n 's|^\s*ether\s*\(\S*\).*$|\1|p'`
+		if [ -f "/etc/network/interfaces.d/$HOSTAPINTERFACE" ]; then
+			HOSTAPIPADDRESS=`cat "/etc/network/interfaces.d/$HOSTAPINTERFACE" | sed -n 's|^\s*address\s*\(\S*\).*$|\1|p'`
+			HOSTAPNETMASK=`cat "/etc/network/interfaces.d/$HOSTAPINTERFACE" | sed -n 's|^\s*netmask\s*\(\S*\).*$|\1|p'`
+			HOSTAPNETWORK=`cat "/etc/network/interfaces.d/$HOSTAPINTERFACE" | sed -n 's|^\s*network\s*\(\S*\).*$|\1|p'`
+			HOSTAPBROADCAST=`cat "/etc/network/interfaces.d/$HOSTAPINTERFACE" | sed -n 's|^\s*broadcast\s*\(\S*\).*$|\1|p'`
+		else
+			# We take a number in the 128 to 128 to create a random IP range for the accesspoint
+			HOSTAPNETWORKOCTET=`shuf -i 128-254 -n 1`
+			HOSTAPIPADDRESS="192.168.$HOSTAPNETWORKOCTET.1"
+			HOSTAPNETMASK='255.255.255.0'
+			HOSTAPNETWORK="192.168.$HOSTAPNETWORKOCTET.0"
+			HOSTAPBROADCAST="192.168.$HOSTAPNETWORKOCTET.255"
+		fi
+		read -p 'SSID: ' -e -i "$HOSTAPSSID" 'HOSTAPSSID'
+		# Check password length, 8 to 63 charactrs
+		while true; do
+			read -p "WPA Passphrase: " -e -i "$HOSTAPPASSPHRASE" 'HOSTAPPASSPHRASE'
+			echo -n "$HOSTAPPASSPHRASE" | egrep -q "^.{8,}$" && break
+		done
+
+		echo -n -e "
+
+Host Access Point configuration summary
+Interface: $HOSTAPINTERFACE
+MAC Address: $HOSTAPMACADDRESS
+IP Address: $HOSTAPIPADDRESS
+Netmask: $HOSTAPNETMASK
+Broadcast: $HOSTAPBROADCAST
+SSID: $HOSTAPSSID
+WPA Passphrase: $HOSTAPPASSPHRASE
+\e[1mPress Q to quit, S to skip or any other key to use these settings\e[0m "
+		read -n 1 -s 'CHOICE'
+		([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+	fi
+
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		if [ ! -f /usr/sbin/hostapd ]; then
+			echo 'Installing required packages for your Host Access Point'
+			apt-get install dnsmasq hostapd
+			systemctl stop dnsmasq
+			systemctl stop hostapd
+			HOSTAPDCONF=`cat /etc/hostapd/hostapd.conf`
+		fi
+
+		# Add hostap interface to /etc/udev/rules.d/10-network.rules
+		if ! grep -q "$HOSTAPMACADDRESS" /etc/udev/rules.d/10-network.rules; then
+			echo "KERNEL==\"wlan?\", ATTR{address}==\"$HOSTAPMACADDRESS\", NAME=\"$HOSTAPINTERFACE\"" >> /etc/udev/rules.d/10-network.rules
+		fi
+
+		#ToDo Disable DHCPd
+
+		# Configure /etc/network/interfaces.d/HOSTAPINTERFACE
+		if [ ! -f "/etc/network/interfaces.d/$HOSTAPINTERFACE" ]; then
+			cat << EOF > "/etc/network/interfaces.d/$HOSTAPINTERFACE"
+allow-hotplug $HOSTAPINTERFACE
+iface $HOSTAPINTERFACE inet static
+	address $HOSTAPIPADDRESS
+	netmask $HOSTAPNETMASK
+	network $HOSTAPNETWORK
+	broadcast $HOSTAPBROADCAST
+EOF
+		fi
+
+		echo
+		echo
+		echo 'Configuring Host Access Point...'
+		# dnsmasq
+		if ! grep -q "^interface=$HOSTAPINTERFACE" /etc/dnsmasq.conf; then
+			cat << EOF > /etc/dnsmasq.conf
+
+interface=$HOSTAPINTERFACE
+  dhcp-range=192.168.$HOSTAPNETWORKOCTET.20,192.168.$HOSTAPNETWORKOCTET.254,255.255.255.0,24h
+EOF
+		fi
+
+		# hostapd
+		HOSTAPDCONF=`sed "s|^interface=.*$|interface=$HOSTAPINTERFACE|;s|^ssid=.*$|ssid=$HOSTAPSSID|;s|^wpa_passphrase=.*$|wpa_passphrase=$HOSTAPPASSPHRASE|" <<< "$HOSTAPDCONF"`
+		# Check if HOSTAPDCONF and /etc/hotapd/hostapd.conf differ
+		if ! echo "$HOSTAPDCONF" | diff -q /etc/hostapd/hostapd.conf - > /dev/null; then
+			cp -p /etc/hostapd/hostapd.conf.old
+			echo "$HOSTAPDCONF" > /etc/hostapd/hostapd.conf
+		fi
+
+		#ToDo /etc/default/hostapd
+		#ToDo /etc/avahi/avahi-daemon.conf 
+
+		echo
+		echo
+		echo 'Installing VPN packages'
+		apt-get install openvpn
+		update-rc.d -f openvpn remove
+		#(
+		#cd /etc/openvpn/client &&
+		#	curl -L 'http://www.ipvanish.com/software/configs/ca.ipvanish.com.crt' -O &&
+		#	curl -L 'http://www.ipvanish.com/software/configs/configs.zip' -O &&
+		#	unzip configs.zip &&
+		#	rm configs.zip
+		#)
+
+		clear
+		if $ISREMOTELOGIN; then
+			echo -n -e "\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Host Access Point configuration
+
+Your Access Point is now configured. You need to restart your Rasperry Pi and continue the installation by executing the installation script again. The script will recognise where it has stopped and continue with the next step.
+
+Reconnect to your WLANderlust Access Point using the following credentials:
+SSID: $HOSTAPSSID
+Passphrase: $HOSTAPPASSPHRASE
+URL: pi@gw.local or pi@$HOSTAPIPADDRESS
+\e[1mPress Q to quit or any other key to restart your device\e[0m "
+			read -n 1 -s 'CHOICE'
+			([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+			INSTALLATIONSTATE='wpa_supplicant'
+			echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+			reboot
+		else
+			# Restart Host AP interface
+			# I have not tested this as I always connect remotely
+			ifdown "$HOSTAPINTERFACE"
+			ifup "$HOSTAPINTERFACE"
+			systemctl start hostapd
+			systemctl start dnsmasq
+		fi
+	fi
+
+	INSTALLATIONSTATE='wpa_supplicant'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+if [ "$INSTALLATIONSTATE" = 'wpa_supplicant' ]; then
+	clear
+	if $ISREMOTELOGIN; then
+		echo -n -e "\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+WiFi Roaming configuration
+
+Welcome back! We're now going to configure your device to connect to other
+Access Points
+
+We're going to detect the WiFi interface you want to use to connect to other
+Access Points.
+
+\e[1mPress Q to quit, S to skip or any other key to configure WiFi roaming\e[0m "
+	else
+		echo -n -e "\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+WiFi Roaming configuration
+
+Your Host Access Point is now configured. We're now going to configure your device to
+connect to other Access Points.
+
+\e[1mPress Q to quit, S to skip or any other key to configure WiFi roaming\e[0m "
+	fi
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		if [ -f /etc/hostapd/hostapd.conf ]; then
+			HOSTAPINTERFACE=`cat /etc/hostapd/hostapd.conf | sed -n 's|^interface=\(.*\)$|\1|p'`
+		fi
+
+		echo
+		echo
+		echo 'Available interfaces for'
+		mapfile -t WLANINTERFACES < <(ifconfig -a | sed -n 's|^\(wlan[0-9]*\):.*|\1|p' | sed "/$HOSTAPINTERFACE/d")
+		CHOICE=''
+		for I in ${!WLANINTERFACES[@]}; do
+			WLANINTERFACE=${WLANINTERFACES[$I]}
+			printf '%2d %s\n' "$I" "$WLANINTERFACE"
+			if [ -f "/etc/network/interfaces.d/$WLANINTERFACE" ] && grep -q 'wpa_supplicant.WLANderlust.conf' "/etc/network/interfaces.d/$WLANINTERFACE"; then
+				CHOICE="$I"
+			fi
+		done
+		while true; do
+			read -p 'Select the interface you would like to use: ' -e -i "$CHOICE" 'CHOICE'
+			echo -n "$CHOICE" | egrep -q "^[0-9]+$" && [ ! -z "${WLANINTERFACES[$CHOICE]}" ] && break
+		done
+		WLANDERLUSTINTERFACE="${WLANINTERFACES[$CHOICE]}"
+		WLANDERLUSTMACADDRESS=`ifconfig "$WLANDERLUSTINTERFACE" | sed -n 's|^\s*ether\s*\(\S*\)\s*.*$|\1|p'`
+
+		echo
+		echo
+		echo -n -e "WLANderlust configuration summary
+Interface: $WLANDERLUSTINTERFACE
+MAC Address: $WLANDERLUSTMACADDRESS
+\e[1mPress Q to quit, S to skip or any other key to use these settings\e[0m "
+		read -n 1 -s 'CHOICE'
+		([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+	fi
+
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		#if [ ! -f /usr/sbin/hostapd ]; then
+		#	echo 'Installing required packages for your Access Point'
+		#fi
+
+		# Add WLANderlust interface to /etc/udev/rules.d/10-network.rules
+		if ! grep -q "$WLANDERLUSTMACADDRESS" /etc/udev/rules.d/10-network.rules; then
+			echo "KERNEL==\"wlan?\", ATTR{address}==\"$WLANDERLUSTMACADDRESS\", NAME=\"$WLANDERLUSTINTERFACE\"" >> /etc/udev/rules.d/10-network.rules
+		fi
+
+		# Configure /etc/network/interfaces.d/WLANDERLUSTINTERFACE
+		if [ ! -f "/etc/network/interfaces.d/$WLANDERLUSTINTERFACE" ]; then
+			cat << EOF > "/etc/network/interfaces.d/$WLANDERLUSTINTERFACE"
+allow-hotplug $WLANDERLUSTINTERFACE
+iface $WLANDERLUSTINTERFACE inet manual
+	wpa-roam /etc/wpa_supplicant/wpa_supplicant.WLANderlust.conf
+EOF
+		fi
+
+		if [ ! -f /etc/wpa_supplicant/wpa_supplicant.WLANderlust.conf ]; then
+			cat << EOF > /etc/wpa_supplicant/wpa_supplicant.WLANderlust.conf
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=GR
+
+network={
+	key_mgmt=NONE
+	priority=-100
+}
+EOF
+		fi
+
+		#ToDo /etc/dhcp/dhclient.conf
+	fi
+
+	INSTALLATIONSTATE='WLANderlust'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+if [ "$INSTALLATIONSTATE" = 'WLANderlust' ]; then
+	clear
+	echo -n -e "\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+WLANderlust installation
+
+Your device is now configured as a Host Access Point and will connect to open
+Access Points.
+
+Now it's finally time to install the WLANderlust scripts
+
+\e[1mPress Q to quit, S to skip or any other key to install WLANderlust\e[0m "
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		echo
+		echo
+		echo 'Installing WLANderlust'
+		DIR='/usr/local/lib/WLANderlust/captiveportal.d/'
+		[ ! -d "$DIR" ] && mkdir -p "$DIR" && echo -n '.'
+		DIR='/usr/local/lib/WLANderlust/vpn.d/'
+		[ ! -d "$DIR" ] && mkdir -p "$DIR" && echo -n '.'
+		DIR='/usr/local/lib/WLANderlust/firewall.d/'
+		[ ! -d "$DIR" ] && mkdir -p "$DIR" && echo -n '.'
+		find usr/local/lib/WLANderlust -type f -print0 | while IFS= read -r -d '' FILE; do
+			if [ ! -f "/$FILE" ] || ! diff -q "$FILE" "/$FILE" > /dev/null; then
+				echo "Installing /$FILE"
+				cp --preserve=mode,timestamps "$FILE" "/$FILE"
+			fi
+		done
+		find /usr/local/lib/WLANderlust -type f -print0 | while IFS= read -r -d '' FILE; do
+			if [ ! -f ".$FILE" ] && grep -q "^# WLANderlust" "$FILE"; then
+				echo "Removing $FILE"
+				rm "$FILE"
+			fi
+		done
+
+		FILE='usr/local/bin/WLANderlust'
+		if [ ! -f "/$FILE" ] || ! diff -q "$FILE" "/$FILE" > /dev/null; then
+			echo "Installing /$FILE"
+			cp --preserve=mode,timestamps "$FILE" "/$FILE"
+		fi
+		echo
+
+		# Copy newer versions of the DHCP hooks
+		#echo 'Installing DHCP client hooks'
+		#find etc/dhcp/dhclient-*-hooks.d/ -type f -name '[0-9][0-9]-*' -print0 | while IFS= read -r -d '' FILE; do
+		#	if [ ! -f "/$FILE" ] || ! diff -q "$FILE" "/$FILE" > /dev/null; then
+		#		echo "Installing /$FILE"
+		#		cp --preserve=mode,timestamps "$FILE" "/$FILE"
+		#	fi
+		#done
+		# Remove old DHCP hooks
+		find /etc/dhcp/dhclient-*-hooks.d/ -type f -name '[0-9][0-9]-*' -print0 | while IFS= read -r -d '' FILE; do
+			if [ ! -f ".$FILE" ] && grep -q "^# WLANderlust" "$FILE"; then
+				echo "Removing $FILE"
+				rm "$FILE"
+			fi
+		done
+		echo
+		read
+	fi
+
+	INSTALLATIONSTATE='finished installation'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+clear
+echo -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Success!
+
+Congratulations, WLANderlust is now successfully installed!'
+exit
+
+# Create first connection
+
+# Real Time Clock
+if [ "$INSTALLATIONSTATE" = 'rtc' ]; then
+	clear
+	echo -n -e "`cat << EOF
+\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Real Time Clock
+
+\e[1mPress Q to quit, S to skip or any other key to proceed\e[0m
+EOF`"
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+	#if [ "$CHOICE" = 's' ] && [ "$CHOICE" = 'S' ]; then
+	#fi
+
+	INSTALLATIONSTATE='gps'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+# GPS
+if [ "$INSTALLATIONSTATE" = 'gps' ]; then
+	clear
+	echo -n -e "`cat << EOF
+\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+GPS
+
+\e[1mPress Q to quit, S to skip or any other key to proceed\e[0m
+EOF`"
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+	#if [ "$CHOICE" = 's' ] && [ "$CHOICE" = 'S' ]; then
+	#fi
+	
+	#INSTALLATIONSTATE=''
+	#echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+#INSTALLATIONSTATE='finished installation'
+#echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'

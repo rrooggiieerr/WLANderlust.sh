@@ -269,6 +269,8 @@ to be configured as an Access Point now.
 			HOSTAPNETWORK=`sed -n 's|^\s*network\s*\(\S*\).*$|\1|p' "/etc/network/interfaces.d/$HOSTAPINTERFACE"`
 			HOSTAPBROADCAST=`sed -n 's|^\s*broadcast\s*\(\S*\).*$|\1|p' "/etc/network/interfaces.d/$HOSTAPINTERFACE"`
 			HOSTAPNETWORKOCTET=`sed -n 's|^[0-9]*\.[0-9]*\.\([0-9]*\)\.[0-9]*$|\1|p' <<< "$HOSTAPIPADDRESS"`
+		#ToDo elif grep "^interface $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
+		#ToDo elif grep "^denyinterfaces $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
 		else
 			# We take a number between 128 and 254 to create an IP range for the accesspoint
 			HOSTAPNETWORKOCTET=`shuf -i 128-254 -n 1`
@@ -308,7 +310,7 @@ WPA Passphrase: $HOSTAPPASSPHRASE
 		fi
 
 		# Add hostap interface to /etc/udev/rules.d/10-network.rules
-		if ! grep -q "$HOSTAPMACADDRESS" /etc/udev/rules.d/10-network.rules; then
+		if [ ! -z "$HOSTAPMACADDRESS" ] && ! grep -q "$HOSTAPMACADDRESS" /etc/udev/rules.d/10-network.rules; then
 			echo "KERNEL==\"wlan?\", ATTR{address}==\"$HOSTAPMACADDRESS\", NAME=\"$HOSTAPINTERFACE\"" >> /etc/udev/rules.d/10-network.rules
 		fi
 
@@ -324,6 +326,11 @@ iface $HOSTAPINTERFACE inet static
 	network $HOSTAPNETWORK
 	broadcast $HOSTAPBROADCAST
 EOF
+		fi
+
+		# Configure /etc/dhcpcd.conf
+		if ! grep "^interface $HOSTAPINTERFACE" /etc/dhcpcd.conf && ! grep "^denyinterfaces $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
+			echo -e "\ndenyinterfaces $HOSTAPINTERFACE" >> /etc/dhcpcd.conf
 		fi
 
 		echo
@@ -560,12 +567,12 @@ Now it's finally time to install the WLANderlust scripts
 
 		# Copy newer versions of the DHCP hooks
 		echo 'Installing DHCP client hooks'
-		#find etc/dhcp/dhclient-*-hooks.d/ -type f -name '[0-9][0-9]-*' -print0 | while IFS= read -r -d '' FILE; do
-		#	if [ ! -f "/$FILE" ] || ! diff -q "$FILE" "/$FILE" > /dev/null; then
-		#		echo "Installing /$FILE"
-		#		cp --preserve=mode,timestamps "$FILE" "/$FILE"
-		#	fi
-		#done
+		find etc/dhcp/dhclient-*-hooks.d/ -type f -name '[0-9][0-9]-*' -print0 | while IFS= read -r -d '' FILE; do
+			if [ ! -f "/$FILE" ] || ! diff -q "$FILE" "/$FILE" > /dev/null; then
+				echo "Installing /$FILE"
+				cp --preserve=mode,timestamps "$FILE" "/$FILE"
+			fi
+		done
 		# Remove old DHCP hooks
 		find /etc/dhcp/dhclient-*-hooks.d/ -type f -name '[0-9][0-9]-*' -print0 | while IFS= read -r -d '' FILE; do
 			if [ ! -f ".$FILE" ] && grep -q "^# WLANderlust" "$FILE"; then

@@ -43,7 +43,7 @@ if [ "$INSTALLATIONSTATE" = 'introduction' ]; then
 Welcome to the installation script of WLANderlust!
 
 This script will configure your freshly installed Raspbian to be a roaming
-Access Point with advanced features. Please read the README file for more
+Access Point with advanced features. Please read the README.md file for more
 details.
 
 \e[1mPress Q to quit or any other key to proceed\e[0m '
@@ -481,6 +481,8 @@ MAC Address: $WLANDERLUSTMACADDRESS
 	fi
 
 	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		ifdown "$WLANDERLUSTINTERFACE"
+
 		# Add WLANderlust interface to /etc/udev/rules.d/10-network.rules
 		if ! grep -q "$WLANDERLUSTMACADDRESS" /etc/udev/rules.d/10-network.rules; then
 			echo "KERNEL==\"wlan?\", ATTR{address}==\"$WLANDERLUSTMACADDRESS\", NAME=\"$WLANDERLUSTINTERFACE\"" >> /etc/udev/rules.d/10-network.rules
@@ -509,6 +511,8 @@ EOF
 		fi
 
 		#ToDo /etc/dhcp/dhclient.conf
+
+		ifup "$WLANDERLUSTINTERFACE"
 
 		echo
 		# Just wait a bit to show the result

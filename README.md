@@ -85,9 +85,31 @@ http://bit.ly/RaspberryPiDS3231
 ### External USB GPS
 Any GPS which is supported by GPSd should work.
 
-## Instructions
-Create a fresh installation of Raspbian Stretch Lite on a Micro SD card, login
-as user pi and download the WLANderlust archive.
+## Installation instructions
+You should feel a minimum comforatble with working with the command line. First you need to create a fresh installation of Raspbian Stretch Lite on a Micro SD card.
+
+### Installing Raspbian
+There a plenty of instructions available on the web on how to create an SD card
+with Raspbian. If you follow these instructions and want to continue the
+installation of WLANderlust on your future router remotely, that is you want to
+login on the device from an other computer instead of connecting a screen and
+mouse/keyboard directly to the Raspberry PI, you should keep in mind to also
+configure `wpa_supplicant.conf` and `ssh` in the `boot` directory of the SD
+card. Also you need to have an SSH client installed on your computer, this is
+most probalby already installed if you're using Linus or macOS.
+
+If you're already a Linux user, or are usig macOS, you can use a utility script
+to download the lates Raspbian Lite, install it on an SD card, configure the
+WiFi and enable SSH. The utility script can be found in the `extra` directory
+of the WLANderlust installation.
+
+```
+./extra/latestRaspbianLite2MicroSD
+```
+
+### Installing WLANderlust
+After sucessfully installing Raspbian you login on your Raspberry Pi as user pi
+with password raspbian and download the WLANderlust archive.
 
 ```
 curl -L 'https://github.com/rrooggiieerr/WLANderlust/archive/master.tar.gz' -o WLANderlust.tar.gz
@@ -99,9 +121,12 @@ instructions.
 
 ```
 tar -xf WLANderlust.tar.gz
-cd  WLANderlust
-./installWLANderlust
+cd  WLANderlust-master
+sudo ./installWLANderlust
 ```
+
+## Using WLANderlust
+ToDo
 
 Otherwise the file `usr/local/bin/WLANderlust` should be portable and can run
 independently to solve Captive Portals on any unix that supports the Bash shell.

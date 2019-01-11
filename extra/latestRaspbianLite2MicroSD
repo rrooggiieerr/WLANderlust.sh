@@ -21,10 +21,10 @@ if [ `uname` = 'Darwin' ] || [ "$CONTINUE" != 'true' ]; then
 		read -e -p 'Your WiFi network name: ' 'SSID'
 	fi
 	if [ `uname` = 'Linux' ] && [ -x /usr/bin/wpa_passphrase ]; then
-		echo -e -n 'Your WiFi network passord: '
+		echo -e -n 'Your WiFi network password: '
 		PSK=`wpa_passphrase "$SSID" | sed -n 's|^\tpsk=\([0-9a-f]*\)$|\1|p'`
 	else
-		read -e -p 'Your WiFi password: ' 'PSK'
+		read -e -p 'Your WiFi network password: ' 'PSK'
 		PSK="\"$PSK\""
 	fi
 	echo

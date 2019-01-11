@@ -1,0 +1,31 @@
+# WLANderlust dhclient exit hook
+#
+
+# Return if the interface is the loopback interface
+if [ "$interface" = 'lo' ]; then
+	return
+fi
+
+# Return if the interface is the Host AP interface
+if [ "$interface" = "$HOSTAPINTERFACE" ]; then
+	return
+fi
+
+case $reason in
+	BOUND|REBIND|REBOOT)
+		WLANDERLUSTCOMMAND="/usr/local/bin/WLANderlust -i '$interface'"
+		$AUTOSOLVECAPTIVEPORTAL && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --solve"
+		$AUTOSTARTIPOVERDNS && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --startIPoverDNS"
+		$AUTOSTARTVPN && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --startVPN"
+		WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --restartFirewall --status"
+		eval "$WLANDERLUSTCOMMAND"
+		;;
+	RENEW)
+		$AUTOSOLVECAPTIVEPORTAL &&
+			/usr/local/bin/WLANderlust -i "$interface" --solve --restartFirewall --status ||
+			/usr/local/bin/WLANderlust -i "$interface" --status
+		;;
+	*)
+		# Handled by the dhclient enter hook
+		;;
+esac

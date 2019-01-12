@@ -3,7 +3,8 @@
 
 This package configures a fresh Raspbian Stretch Lite installation to be a
 roaming WiFi repeater with advanced features. Other Debian distributions might
-work. The Captive Portal solving should work on all Unices.
+work. Making the Captive Portal solving should work on all Unices is work in
+progress.
 
 ## Current functionality:
 - Connect to open WiFi Access Points
@@ -74,8 +75,8 @@ external USB WiFi module.
 Technically any USB WiFi antenna which is supported by Linux/Raspbian should
 work, and depending on your means of travel your selection criteria may vary.
 I'm using an Alfa Networks Tube-UN outdoor USB WiFi antenna which is mounted on
-my car and I'm very pleased with it. It recevies signals from multiple KMs away
-if you'r having a direct line of sight.
+my car and I'm very pleased with it. It recevies signals from multiple
+kilometers away if you're having a direct line of sight.
 
 ### Real Time Clock support
 I'm using a i2c DS3231 RTC which you can get for less than $2 including shipping
@@ -115,8 +116,8 @@ with password raspbian and download the WLANderlust archive.
 curl -L 'https://github.com/rrooggiieerr/WLANderlust/archive/master.tar.gz' -o WLANderlust.tar.gz
 ```
 
-To configure your Raspbian as a roaming WiFi repeater Unpack the WLANderlust
-archive and execute the `installWLANderlust` installation script and follow the
+To configure your Raspbian as a roaming WiFi repeater unpack the WLANderlust
+archive, execute the `installWLANderlust` installation script and follow the
 instructions.
 
 ```
@@ -167,5 +168,3 @@ https://www.facebook.com/seekingtheedge
 ### Contributors
 I'm looking forward to your sugestions, improvements, bug fixes, support for
 aditional authentication methods and new functionality.
-
-## License

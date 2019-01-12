@@ -281,9 +281,10 @@ to be configured as an Access Point now.
 			HOSTAPBROADCAST="192.168.$HOSTAPNETWORKOCTET.255"
 		fi
 		read -p 'SSID: ' -e -i "$HOSTAPSSID" 'HOSTAPSSID'
-		# Check passphrase length, 8 to 63 charactrs
+		#ToDo Check SSID length, max 32 characters
 		while true; do
 			read -p "WPA Passphrase: " -e -i "$HOSTAPPASSPHRASE" 'HOSTAPPASSPHRASE'
+			# Check passphrase length, 8 to 63 charactrs
 			echo -n "$HOSTAPPASSPHRASE" | egrep -q "^.{8,}$" && break
 		done
 
@@ -366,7 +367,7 @@ rsn_pairwise=CCMP"
 		fi
 		# Check if HOSTAPDCONF and /etc/hotapd/hostapd.conf differ
 		if ! echo "$HOSTAPDCONF" | diff -q /etc/hostapd/hostapd.conf - > /dev/null; then
-			cp -p /etc/hostapd/hostapd.conf.old
+			mv /etc/hostapd/hostapd.conf /etc/hostapd/hostapd.conf.old
 			echo "$HOSTAPDCONF" > /etc/hostapd/hostapd.conf
 		fi
 

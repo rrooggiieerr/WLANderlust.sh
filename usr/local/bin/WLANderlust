@@ -321,7 +321,9 @@ $DEBUGLOGGING && ! $INTERFACEISUP && logMessage "Interface $INTERFACE is down"
 
 ISWIFIINTERFACE='false'
 [ "`uname`" = 'Linux' ] && grep -q '^wlan[0-9]*$' <<< "$INTERFACE" && ISWIFIINTERFACE='true'
-#ToDo [ "`uname`" = 'Darwin' ]
+[ "`uname`" = 'Darwin' ]  &&
+	networksetup -listallhardwareports | grep -B 1 "^Device: $INTERFACE" | grep -q "Hardware Port: Wi-Fi" &&
+	ISWIFIINTERFACE='true'
 $VERBOSELOGGING && $ISWIFIINTERFACE && logMessage "Using WiFi interface $INTERFACE"
 $VERBOSELOGGING && ! $ISWIFIINTERFACE && logMessage "Using non-WiFi interface $INTERFACE"
 IPADDRESS=`ifconfig "$INTERFACE" | sed -n 's|.*inet \([^ ]*\) .*|\1|p'`
@@ -619,7 +621,7 @@ getWiFiStatus()
 		INTERFACEISUP='false'
 
 	#ToDo make this portable
-	if $INTERFACEISUP && $ISWIFIINTERFACE &&
+	if $INTERFACEISUP && $ISWIFIINTERFACE && [ "`uname`" = 'Linux' ]  &&
 		[ -x '/sbin/wpa_cli' ] && WPASTATUS=`/sbin/wpa_cli -i "$INTERFACE" status 2> /dev/null`; then
 		setState 'BSSID' `sed -n 's|^bssid=\(.*\)$|\1|p' <<< "$WPASTATUS"`
 		setState 'SSID' `sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$WPASTATUS"`
@@ -638,6 +640,8 @@ getWiFiStatus()
 			# Are we in roaming mode?
 			grep -q '^\swpa-roam ' "/etc/network/interfaces.d/$INTERFACE" && ISROAMING='true'
 		fi
+	elif $INTERFACEISUP && $ISWIFIINTERFACE && [ "`uname`" = 'Darwin' ]; then
+		setState 'SSID' `networksetup -getairportnetwork "$INTERFACE" | sed -n 's|^Current Wi-Fi Network: ||p'`
 	else
 		setState 'BSSID' ''
 		setState 'SSID' ''

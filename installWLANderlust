@@ -131,7 +131,7 @@ your freshly installed Raspbian to their latest versions.
 		sleep 2
 	fi
 
-	INSTALLATIONSTATE='hostaccesspoint'
+	INSTALLATIONSTATE='settings'
 	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
 fi
 
@@ -152,7 +152,7 @@ ToDo
 	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
 		echo
 		# Change hostname
-		if grep '^raspberrypi$' /etc/hostname; then
+		if grep -q '^raspberrypi$' /etc/hostname; then
 			echo
 			echo 'Updating hostname'
 			echo 'wlanderlust' > /etc/hostname
@@ -170,6 +170,7 @@ ToDo
 	fi
 
 	INSTALLATIONSTATE='hostaccesspoint'
+	#ToDo INSTALLATIONSTATE='rtc'
 	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
 fi
 
@@ -269,8 +270,8 @@ to be configured as an Access Point now.
 			HOSTAPNETWORK=`sed -n 's|^\s*network\s*\(\S*\).*$|\1|p' "/etc/network/interfaces.d/$HOSTAPINTERFACE"`
 			HOSTAPBROADCAST=`sed -n 's|^\s*broadcast\s*\(\S*\).*$|\1|p' "/etc/network/interfaces.d/$HOSTAPINTERFACE"`
 			HOSTAPNETWORKOCTET=`sed -n 's|^[0-9]*\.[0-9]*\.\([0-9]*\)\.[0-9]*$|\1|p' <<< "$HOSTAPIPADDRESS"`
-		#ToDo elif grep "^interface $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
-		#ToDo elif grep "^denyinterfaces $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
+		#ToDo elif grep -q "^interface $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
+		#ToDo elif grep -q "^denyinterfaces $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
 		else
 			# We take a number between 128 and 254 to create an IP range for the accesspoint
 			HOSTAPNETWORKOCTET=`shuf -i 128-254 -n 1`
@@ -329,7 +330,7 @@ EOF
 		fi
 
 		# Configure /etc/dhcpcd.conf
-		if ! grep "^interface $HOSTAPINTERFACE" /etc/dhcpcd.conf && ! grep "^denyinterfaces $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
+		if ! grep -q "^interface $HOSTAPINTERFACE" /etc/dhcpcd.conf && ! grep -q "^denyinterfaces $HOSTAPINTERFACE" /etc/dhcpcd.conf; then
 			echo -e "\ndenyinterfaces $HOSTAPINTERFACE" >> /etc/dhcpcd.conf
 		fi
 
@@ -510,6 +511,10 @@ network={
 EOF
 		fi
 
+		if [ ! -f "/etc/wpa_supplicant/wpa_supplicant-$WLANDERLUSTINTERFACE.conf" ]; then
+			ln -s wpa_supplicant.WLANderlust.conf "/etc/wpa_supplicant/wpa_supplicant-$WLANDERLUSTINTERFACE.conf"
+		fi
+
 		#ToDo /etc/dhcp/dhclient.conf
 
 		ifup "$WLANDERLUSTINTERFACE"
@@ -530,8 +535,7 @@ if [ "$INSTALLATIONSTATE" = 'WLANderlust' ] || [ "$INSTALLATIONSTATE" = 'update'
 \e[0m
 WLANderlust installation
 
-Your device is now configured as a Host Access Point and will connect to open
-Access Points.
+Your device is now configured to connect to open Access Points.
 
 Now it's finally time to install the WLANderlust scripts
 

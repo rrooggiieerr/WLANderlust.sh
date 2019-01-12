@@ -28,6 +28,7 @@ Usage:
   --startFirewall
   --stopFirewall
   --restartFirewall
+  --switchHostAPchannel
   --status
   --verbose
   --debug'
@@ -53,7 +54,7 @@ logMessage()
 {
 	[[ -t 1 || -p /dev/stdin ]] &&
 		echo "$@"
-	[ ! -z "$LOGFILE" ] && [ "$LOGFILE" != '/dev/stdout/' ] &&
+	[ ! -z "$LOGFILE" ] && [ "$LOGFILE" != '/dev/stdout' ] &&
 		echo "`date` $INTERFACE $SCRIPTNAME $@" >> "$LOGFILE"
 }
 
@@ -62,7 +63,7 @@ logError()
 	[[ -t 1 || -p /dev/stdin ]] &&
 		# Set text color to bold red
 		echo -e "\e[1m\e[31m$@\e[0m" > /dev/stderr
-	[ ! -z "$LOGFILE" ] && [ "$LOGFILE" != '/dev/stdout/' ] &&
+	[ ! -z "$LOGFILE" ] && [ "$LOGFILE" != '/dev/stdout' ] &&
 		echo "`date` $INTERFACE $SCRIPTNAME $@" >> "$LOGFILE"
 }
 
@@ -178,9 +179,9 @@ DEFAULTGPSFILE="$LOGPATH/WLANderlust.gps"
 [ -z "$COOKIEJAR" ] && COOKIEJAR=`getConfigValue 'COOKIEJAR' "$DEFAULTCOOKIEJAR"`
 [ -z "$PASSWORDSFILE" ] && PASSWORDSFILE=`getConfigValue 'PASSWORDSFILE' "$DEFAULTPASSWORDSFILE"`
 [ -z "$LOGFILE" ] && LOGFILE=`getConfigValue 'LOGFILE' "$DEFAULTLOGFILE"`
-[ ! -w "$LOGFILE" ] && LOGFILE='/dev/stdout'
+([ ! -w "$LOGFILE" ] || ([ ! -f "$LOGFILE" ] && [ ! -w `dirname "$LOGFILE"` ])) && LOGFILE='/dev/stdout'
 [ -z "$GPSFILE" ] && GPSFILE=`getConfigValue 'GPSFILE' "$DEFAULTGPSFILE"`
-[ ! -w "$GPSFILE" ] && GPSFILE='/dev/null'
+([ ! -w "$GPSFILE" ] || ([ ! -f "$GPSFILE" ] && [ ! -w `dirname "$GPSFILE"` ])) && GPSFILE='/dev/null'
 [ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`
 [ -z "$VERBOSELOGGING" ] && VERBOSELOGGING=`getConfigValue 'VERBOSELOGGING'`
 [ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`
@@ -215,11 +216,13 @@ fi
 SOLVE='false'
 STARTIPOVERDNS='false'
 STOPIPOVERDNS='false'
+FORCE='false'
 STARTVPN='false'
 STOPVPN='false'
 STARTFIREWALL='false'
 STOPFIREWALL='false'
-FORCE='false'
+SWITCHHOSTAPCHANNEL='false'
+STATUS='false'
 while [ ! -z "$1" ]; do
 	PARAM=`tr '[:upper:]' '[:lower:]' <<< "$1"`
 	if $ROOT; then
@@ -236,7 +239,8 @@ while [ ! -z "$1" ]; do
 			--startfirewall) INTERACTIVE='false'; STARTFIREWALL='true' ;;
 			--stopfirewall) INTERACTIVE='false'; STOPFIREWALL='true' ;;
 			--restartfirewall) INTERACTIVE='false'; STOPFIREWALL='true'; STARTFIREWALL='true' ;;
-			--state|--status) INTERACTIVE='false'; STATUS='true' ;;
+			--switchhostapchannel) INTERACTIVE='false'; SWITCHHOSTAPCHANNEL='true' ;;
+			--state|--status) STATUS='true' ;;
 			--verbose) VERBOSELOGGING='true' ;;
 			--debug) DEBUGLOGGING='true' ;;
 			*)
@@ -250,7 +254,7 @@ while [ ! -z "$1" ]; do
 			-h|--help) usage; exit ;;
 			-i|--interface) INTERFACE="$2"; shift ;;
 			-s|--solve) SOLVE='true' ;;
-			--state|--status) INTERACTIVE='false'; STATUS='true' ;;
+			--state|--status) STATUS='true' ;;
 			--verbose) VERBOSELOGGING='true' ;;
 			--debug) DEBUGLOGGING='true' ;;
 			*)
@@ -407,7 +411,7 @@ readPassword() {
 		read -r -p "$1" -e -i "$2" PASSWORD
 	else
 		# Code example from https://stackoverflow.com/questions/4316730/linux-scripting-hiding-user-input-on-terminal
-		#ToDo Backspace dosn't work yet
+		#ToDo Backspace doesn't work yet
 		echo -n "$1"
 		while IFS= read -r -s -n 1 _C; do
 			if [[ -z "$_C" ]]; then
@@ -566,18 +570,42 @@ getBody()
 
 # Captive Portal functions
 # https://en.wikipedia.org/wiki/Captive_portal
+# Returns 0 when Captive Portal is present else 1
 isCaptivePortalPresent()
 {
+	(! $INTERFACEISUP || ! $ISWIFIINTERFACE || [ "$WPASTATE" != 'COMPLETED' ]) &&
+		return 1
+
 	SCRIPTNAME="$LIBPATH/captiveportal"
 	. "$SCRIPTNAME" STATE
 	SCRIPTNAME="$0"
+
+	if [ ! -z "$WHATISMYIPURL" ] && ([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]); then
+		setState 'EXTERNALIP' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+	fi
+
+	[ "$CAPTIVEPORTALSTATE" = 'present' ] &&
+		return 0
+	return 1
 }
 
+# Returns 0 when Captive Portal is none or solved else 1
 solveCaptivePortal()
 {
+	(! $INTERFACEISUP || ! $ISWIFIINTERFACE || [ "$WPASTATE" != 'COMPLETED' ]) &&
+		return 1
+
 	SCRIPTNAME="$LIBPATH/captiveportal"
 	. "$SCRIPTNAME" SOLVE
 	SCRIPTNAME="$0"
+
+	if [ ! -z "$WHATISMYIPURL" ] && ([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]); then
+		setState 'EXTERNALIP' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+	fi
+
+	([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]) &&
+		return 0
+	return 1
 }
 
 # WiFi functions
@@ -610,7 +638,18 @@ getWiFiStatus()
 			# Are we in roaming mode?
 			grep -q '^\swpa-roam ' "/etc/network/interfaces.d/$INTERFACE" && ISROAMING='true'
 		fi
+	else
+		setState 'BSSID' ''
+		setState 'SSID' ''
+		setState 'WPASTATE' ''
+	fi
 
+	storeState
+}
+
+showWiFiStatus()
+{
+	if $INTERFACEISUP && $ISWIFIINTERFACE; then
 		# Print some details
 		if $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
 			if [ "$WPASTATE" = 'COMPLETED' ]; then
@@ -624,20 +663,14 @@ getWiFiStatus()
 					MESSAGE+=", not roaming"
 				logMessage "$MESSAGE"
 			else
-				MESSAGE="Interface $INTERFACE is not connected, $WPASTATE"
+				MESSAGE="WiFi interface $INTERFACE is not connected to an Access Point, $WPASTATE"
 				$ISROAMING &&
 					MESSAGE+=", roaming" ||
 					MESSAGE+=", not roaming"
 				logError "$MESSAGE"
 			fi
 		fi
-	else
-		setState 'BSSID' ''
-		setState 'SSID' ''
-		setState 'WPASTATE' ''
 	fi
-
-	storeState
 }
 
 
@@ -667,7 +700,7 @@ getNetworkStatus()
 		INTERFACEISUP='false'
 
 	if ! $INTERFACEISUP; then
-		logError "Interface $INTERFACE is down"
+		# Interface is down
 		setState 'IPADDRESS' ''
 		setState 'NETMASK' ''
 		setState 'GATEWAY' ''
@@ -692,7 +725,22 @@ getNetworkStatus()
 				setState 'EXTERNALIP' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
 			fi
 		fi
+	else
+		# WiFi is not connected
+		setState 'IPADDRESS' ''
+		setState 'NETMASK' ''
+		setState 'GATEWAY' ''
+		setState 'EXTERNALIP' ''
+	fi
 
+	storeState
+}
+
+showNetworkStatus()
+{
+	if ! $INTERFACEISUP; then
+		logError "Interface $INTERFACE is down"
+	elif ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
 		# Print some details
 		if $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
 			$ISWIFIINTERFACE &&
@@ -734,14 +782,8 @@ getNetworkStatus()
 
 		fi
 	else
-		# WiFi is not connected
-		setState 'IPADDRESS' ''
-		setState 'NETMASK' ''
-		setState 'GATEWAY' ''
-		setState 'EXTERNALIP' ''
+		logError "Interface $INTERFACE is not connected"
 	fi
-
-	storeState
 }
 
 scanForNetworks()
@@ -781,8 +823,8 @@ append2wpa_supplicant()
 	elif [ ! -w "$WPASUPPLICANTCONF" ]; then
 		logError "$WPASUPPLICANTCONF is not writable"
 		return 1
-	elif /bin/grep -q "ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
-		logError "SSID \"$SSID\" is already configured in wpa_supplicant configuration"
+	elif /bin/grep -q "ssid=\"$1\"" "$WPASUPPLICANTCONF"; then
+		logError "SSID \"$1\" is already configured in wpa_supplicant configuration"
 		return 1
 	fi
 
@@ -833,12 +875,12 @@ editwpa_supplicant()
 
 configureWiFi()
 {
-	SSID="$1"
+	_SSID="$1"
 	SSIDINFO="$2"
 
 	# Check if this network is already in wpa_supplicant
-	if /bin/fgrep -q -x "   ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
-		OLDWIFICONFIG=`sudo fgrep -B 1 -A 3 -x "    ssid=\"$SSID\"" "$WPASUPPLICANTCONF"`
+	if /bin/fgrep -q -x "   ssid=\"$_SSID\"" "$WPASUPPLICANTCONF"; then
+		OLDWIFICONFIG=`sudo fgrep -B 1 -A 3 -x "    ssid=\"$_SSID\"" "$WPASUPPLICANTCONF"`
 
 		echo 'SSID already configured:'
 		echo "$OLDWIFICONFIG"
@@ -854,7 +896,7 @@ configureWiFi()
 		esac
 	fi
 
-	if [ ! -z "$SSID" ]; then
+	if [ ! -z "$_SSID" ]; then
 		if [ -z "$SSIDINFO" ]; then
 			readPassword 'Password: '
 			echo
@@ -870,22 +912,22 @@ configureWiFi()
 		if [ ! -z "$PASSWORD" ]; then
 			WIFICONFIG="network={
 	#bssid=$BSSID
-	ssid=\"$SSID\"
+	ssid=\"$_SSID\"
 	psk=\"$PASSWORD\"
 	priority=50
 }"
 		else
 			WIFICONFIG="network={
 	#bssid=$BSSID
-	ssid=\"$SSID\"
+	ssid=\"$_SSID\"
 	key_mgmt=NONE
 	priority=50
 }"
 		fi
 
 		# Check if this network is already in wpa_supplicant
-		#if ! /bin/fgrep -q -x " ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
-		if ! /bin/grep -q "^\s*ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
+		#if ! /bin/fgrep -q -x " ssid=\"$_SSID\"" "$WPASUPPLICANTCONF"; then
+		if ! /bin/grep -q "^\s*ssid=\"$_SSID\"" "$WPASUPPLICANTCONF"; then
 			while true; do
 				echo 'Configuration:'
 				echo "$WIFICONFIG"
@@ -945,8 +987,8 @@ configureWiFi()
 
 configureWiFiManual()
 {
-	read -r -p 'SSID: ' SSID
-	configureWiFi "$SSID" ''
+	read -r -p 'SSID: ' _SSID
+	configureWiFi "$_SSID" ''
 }
 
 toggleRoaming()
@@ -980,6 +1022,10 @@ isIPoverDNSactive()
 	SCRIPTNAME="$LIBPATH/ipoverdns"
 	. "$SCRIPTNAME" STATE
 	SCRIPTNAME="$0"
+
+	if [ ! -z "$WHATISMYIPURL" ] && [ "$IPOVERDNSSTATE" = 'started' ]; then
+		setState 'EXTERNALIP' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+	fi
 }
 isIPoverDNSactive
 
@@ -988,6 +1034,10 @@ startIPoverDNStunneling()
 	SCRIPTNAME="$LIBPATH/ipoverdns"
 	. "$SCRIPTNAME" START
 	SCRIPTNAME="$0"
+
+	if [ ! -z "$WHATISMYIPURL" ] && [ "$IPOVERDNSSTATE" = 'started' ]; then
+		setState 'EXTERNALIP' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+	fi
 }
 
 stopIPoverDNStunneling()
@@ -1003,6 +1053,10 @@ isVPNactive()
 	SCRIPTNAME="$LIBPATH/vpn"
 	. "$SCRIPTNAME" STATE
 	SCRIPTNAME="$0"
+
+	if [ ! -z "$WHATISMYIPURL" ] && [ "$VPNSTATE" = 'started' ]; then
+		setState 'EXTERNALIP' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+	fi
 }
 isVPNactive
 
@@ -1011,6 +1065,10 @@ startVPN()
 	SCRIPTNAME="$LIBPATH/vpn"
 	. "$SCRIPTNAME" START
 	SCRIPTNAME="$0"
+
+	if [ ! -z "$WHATISMYIPURL" ] && [ "$VPNSTATE" = 'started' ]; then
+		setState 'EXTERNALIP' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+	fi
 }
 
 stopVPN()
@@ -1051,6 +1109,25 @@ stopFirewall()
 
 	FWINTERFACE="$INTERFACE"
 	logMessage 'Firewall stopped'
+}
+
+# Changes the channel of the Host Access Point
+switchHostAPchannel()
+{
+	if [ -f '/etc/hostapd/hostapd.conf' ] && [ ! -z "$CHANNEL" ]; then
+		NEWHOSTAPCHANNEL=1
+		[ "$CHANNEL" -lt 6 ] && NEWHOSTAPCHANNEL=11
+
+		if [ "$NEWHOSTAPCHANNEL" -ne "$HOSTAPCHANNEL" ]; then
+			logMessage "Changing channel of the Host Access Point to $NEWHOSTAPCHANNEL"
+			# Change channel in hostapd.conf
+			sed "s|^channel=.*$|channel=$NEWHOSTAPCHANNEL|" -i /etc/hostapd/hostapd.conf
+			# restart hostapd
+			# Somehow `service hostapd restart` does not start the service
+			service hostapd stop
+			service hostapd start
+		fi
+	fi
 }
 
 # User interaction
@@ -1103,169 +1180,168 @@ WLANderlustMenu()
 {
 	SCANFORNETWORKS='false'
 	while true; do
-	! $VERBOSELOGGING && clear
-	echo -e '\e[1mWLANderlust'
-	echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
-	getWiFiStatus
-	$INTERFACEISUP &&
-		(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+		getWiFiStatus
+		getNetworkStatus
+		! $VERBOSELOGGING && clear
+		echo -e '\e[1mWLANderlust'
+		echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
+		showWiFiStatus
 		isCaptivePortalPresent
-	getNetworkStatus
-	echo
-
-	$INTERFACEISUP &&
-		$ISWIFIINTERFACE &&
-		[ "$WPASTATE" != 'COMPLETED' ] &&
-		[ ! -z "$IPADDRESS" ] &&
-		SCANFORNETWORKS='true'
-	$SCANFORNETWORKS &&
-		scanForNetworks &&
+		showNetworkStatus
 		echo
-	if $SCANFORNETWORKS && [ ! -z "$WIFIINFO" ]; then
-		#ToDo Rewrite to use sed -n
-		mapfile -t SSIDS < <(grep 'ESSID' <<< "$WIFIINFO" | sed 's|.*"\(.*\)"|\1|' | sort -bf | uniq)
-		CURRENTSSID="$SSID"
-		for I in ${!SSIDS[@]}; do
-			SSID=${SSIDS[$I]}
-			SSIDINFO=`fgrep -B 5 "ESSID:\"$SSID\"" <<< "$WIFIINFO"`
-			#ToDo Rewrite to use sed -n
-			CHANNEL=`echo -n "$SSIDINFO" | grep 'Channel:' | sed 's|^  Channel:||' | head -n 1`
-			# Calculate signal quality
-			QUALITY=$(( 100 * `echo "$SSIDINFO" | grep "^  Quality=" | sed 's|.*Quality=\([0-9]*/[0-9]*\)  Signal level=-[0-9]* dBm.*|\1|' | sort | tail -n 1` ))
 
-			#
-			if [ "$WPASTATE" = 'COMPLETED' ] && [ "$SSID" = "$CURRENTSSID" ]; then
-				echo -n "✔︎"
-			else
-				echo -n ' '
-			fi
-
-			printf '\e[1m%2d\e[0m' $I
-
-			# Print a floppy character if the SSID is already configured in the WPA supplicant configuration
-			grep -q "^\sssid=\"$SSID\"" "$WPASUPPLICANTCONF" &&
-				echo -n "💾" ||
-				echo -n ' '
-
-			# Print a lock character if encryption is on
-			grep -q "^  Encryption key:on$" <<< "$SSIDINFO" &&
-				echo -n "🔒" ||
-				echo -n ' '
-
-			#for FILE in `ls /home/pi/Instabridge/*.dib`; do
-			#       sqlite3 $FILE 'select "'$FILE'", `ssid`, quote(`security.password`), `location.latitude`, `location.longitude` from hotspots where `ssid` like "'"$SSID"'" COLLATE NOCASE'
-			#done
-
-			printf '%3d%% %2d "%s"' $QUALITY $CHANNEL "$SSID"
-
+		$INTERFACEISUP &&
+			$ISWIFIINTERFACE &&
+			[ "$WPASTATE" != 'COMPLETED' ] &&
+			[ ! -z "$IPADDRESS" ] &&
+			SCANFORNETWORKS='true'
+		$SCANFORNETWORKS &&
+			scanForNetworks &&
 			echo
-		done
-		SSID="$CURRENTSSID"
-	fi
-	$SCANFORNETWORKS &&
-		echo -e '  \e[1mM\e[0m \e[1mM\e[0manual'
+		if $SCANFORNETWORKS && [ ! -z "$WIFIINFO" ]; then
+			mapfile -t SSIDS < <(sed -n 's|^  ESSID:"\(.*\)"|\1|p' <<<  "$WIFIINFO" | sort -bf | uniq)
+			for I in ${!SSIDS[@]}; do
+				_SSID=${SSIDS[$I]}
+				SSIDINFO=`fgrep -B 5 "ESSID:\"$_SSID\"" <<< "$WIFIINFO"`
+				_CHANNEL=`sed -n 's|^  Channel:||p' <<< "$SSIDINFO" | head -n 1`
+				# Calculate signal quality
+				QUALITY=$(( 100 * `echo "$SSIDINFO" | grep "^  Quality=" | sed 's|.*Quality=\([0-9]*/[0-9]*\)  Signal level=-[0-9]* dBm.*|\1|' | sort | tail -n 1` ))
 
-	$SCANFORNETWORKS &&
-		echo -e '  \e[1mW\e[0m Stop scanning W\e[0miFi for networks' ||
-		echo -e '  \e[1mW\e[0m Scan for \e[1mW\e[0miFi networks'
-	$SCANFORNETWORKS &&
-		[ "$WPASTATE" = 'COMPLETED' ] &&
-		echo -e "  \e[1mA\e[0m Re\e[1ma\e[0mssociate interface $INTERFACE"
-	(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
-		[ "$CAPTIVEPORTALSTATE" != 'none' ] &&
-		[ "$CAPTIVEPORTALSTATE" != 'solved' ] &&
-		echo -e '  \e[1mS\e[0m \e[1mS\e[0molve Captive Portal'
-	(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
-		(([ "$CAPTIVEPORTALSTATE" != 'none' ] && [ "$CAPTIVEPORTALSTATE" != 'solved' ]) || $FORCE) &&
-		[ "$IPOVERDNSSTATE" = 'stopped' ] &&
-		[ "$VPNSTATE" = 'stopped' ] &&
-		echo -e '  \e[1mD\e[0m Start IP over \e[1mD\e[0mNS tunneling'
-	[ "$IPOVERDNSSTATE" != 'stopped' ] && [ "$VPNSTATE" = 'stopped' ] &&
-		echo -e '  \e[1mD\e[0m Stop IP over \e[1mD\e[0mNS tunneling'
-	(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
-		([ "$CAPTIVEPORTALSTATE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]) &&
-		[ "$VPNSTATE" = 'stopped' ] &&
-		echo -e '  \e[1mV\e[0m Start \e[1mV\e[0mPN'
-	[ "$VPNSTATE" != 'stopped' ] && echo -e '  \e[1mV\e[0m Stop \e[1mV\e[0mPN'
-	echo -e '  \e[1mC\e[0m \e[1mC\e[0monfigure WLANderlust'
-	echo -e '  \e[1mQ\e[0m \e[1mQ\e[0muit'
-	echo
-
-	# Flush stdin
-	read -d '' -t 0.1 -n 10000 IGNORE
-
-	if $SCANFORNETWORKS && read -r -p 'Network to configure or option: ' -t 30 || read -r -p 'Option: '; then
-		case "$REPLY" in
-			W|w)
-				$SCANFORNETWORKS &&
-					SCANFORNETWORKS='false' ||
-					SCANFORNETWORKS='true'
-				;;
-			A|a)
-				reassociateInterface
-				;;
-			S|s)
-				solveCaptivePortal
-		       	       ;;
-			D|d)
-				echo
-				if [ "$IPOVERDNSSTATE" = 'stopped' ]; then
-					startIPoverDNStunneling
-					stopFirewall
-					startFirewall
+				#
+				if [ "$WPASTATE" = 'COMPLETED' ] && [ "$_SSID" = "$SSID" ]; then
+					echo -n "✔︎"
 				else
-					stopIPoverDNStunneling
-					stopFirewall
-					startFirewall
+					echo -n ' '
 				fi
-				;;
-			V|v)
+
+				printf '\e[1m%2d\e[0m' $I
+
+				# Print a floppy character if the SSID is already configured in the WPA supplicant configuration
+				grep -q "^\sssid=\"$_SSID\"" "$WPASUPPLICANTCONF" &&
+					echo -n "💾" ||
+					echo -n ' '
+
+				# Print a lock character if encryption is on
+				grep -q "^  Encryption key:on$" <<< "$SSIDINFO" &&
+					echo -n "🔒" ||
+					echo -n ' '
+
+				#for FILE in `ls /home/pi/Instabridge/*.dib`; do
+				#       sqlite3 $FILE 'select "'$FILE'", `ssid`, quote(`security.password`), `location.latitude`, `location.longitude` from hotspots where `ssid` like "'"$_SSID"'" COLLATE NOCASE'
+				#done
+
+				printf '%3d%% %2d "%s"' $QUALITY $_CHANNEL "$_SSID"
+
 				echo
-				if [ "$VPNSTATE" = 'stopped' ]; then
-					startVPN
-					stopFirewall
-					startFirewall
-				else
-					stopVPN
-					stopFirewall
-					startFirewall
-				fi
-				;;
-			Q|q|X|x) exit ;;
-			C|c)
-				WLANderlustConfigurationMenu
-				;;
-			M|m)
-				configureWiFiManual
-				;;
-			*)
-				if $SCANFORNETWORKS && echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${SSIDS[$REPLY]}" ]; then
+			done
+		fi
+		$SCANFORNETWORKS &&
+			echo -e '  \e[1mM\e[0m \e[1mM\e[0manual'
+
+		$SCANFORNETWORKS &&
+			echo -e '  \e[1mW\e[0m Stop scanning W\e[0miFi for networks' ||
+			echo -e '  \e[1mW\e[0m Scan for \e[1mW\e[0miFi networks'
+		$SCANFORNETWORKS &&
+			[ "$WPASTATE" = 'COMPLETED' ] &&
+			echo -e "  \e[1mA\e[0m Re\e[1ma\e[0mssociate interface $INTERFACE"
+		(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+			[ "$CAPTIVEPORTALSTATE" != 'none' ] &&
+			[ "$CAPTIVEPORTALSTATE" != 'solved' ] &&
+			echo -e '  \e[1mS\e[0m \e[1mS\e[0molve Captive Portal'
+		(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+			(([ "$CAPTIVEPORTALSTATE" != 'none' ] && [ "$CAPTIVEPORTALSTATE" != 'solved' ]) || $FORCE) &&
+			[ "$IPOVERDNSSTATE" = 'stopped' ] &&
+			[ "$VPNSTATE" = 'stopped' ] &&
+			echo -e '  \e[1mD\e[0m Start IP over \e[1mD\e[0mNS tunneling'
+		[ "$IPOVERDNSSTATE" != 'stopped' ] && [ "$VPNSTATE" = 'stopped' ] &&
+			echo -e '  \e[1mD\e[0m Stop IP over \e[1mD\e[0mNS tunneling'
+		(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
+			([ "$CAPTIVEPORTALSTATE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]) &&
+			[ "$VPNSTATE" = 'stopped' ] &&
+			echo -e '  \e[1mV\e[0m Start \e[1mV\e[0mPN'
+		[ "$VPNSTATE" != 'stopped' ] && echo -e '  \e[1mV\e[0m Stop \e[1mV\e[0mPN'
+		echo -e '  \e[1mC\e[0m \e[1mC\e[0monfigure WLANderlust'
+		echo -e '  \e[1mQ\e[0m \e[1mQ\e[0muit'
+		echo
+
+		# Flush stdin
+		read -d '' -t 0.1 -n 10000 IGNORE
+
+		if $SCANFORNETWORKS && read -r -p 'Network to configure or option: ' -t 30 || read -r -p 'Option: '; then
+			case "$REPLY" in
+				W|w)
+					$SCANFORNETWORKS &&
+						SCANFORNETWORKS='false' ||
+						SCANFORNETWORKS='true'
+					;;
+				A|a)
+					reassociateInterface
+					;;
+				S|s)
+					solveCaptivePortal
+				       ;;
+				D|d)
 					echo
-					SSID="${SSIDS[$REPLY]}"
-					echo "SSID: $SSID"
-					SSIDINFO=`echo -n "$WIFIINFO" | fgrep -B 5 "  ESSID:\"$SSID\""`
-					configureWiFi "$SSID" "$SSIDINFO"
-					break
-				else
-					echo -en '\t\e[1m\e[31mInvalid input\e[0m\r'
-				fi
-				;;
-		esac
-	fi
+					if [ "$IPOVERDNSSTATE" = 'stopped' ]; then
+						startIPoverDNStunneling
+						stopFirewall
+						startFirewall
+					else
+						stopIPoverDNStunneling
+						stopFirewall
+						startFirewall
+					fi
+					;;
+				V|v)
+					echo
+					if [ "$VPNSTATE" = 'stopped' ]; then
+						startVPN
+						stopFirewall
+						startFirewall
+					else
+						stopVPN
+						stopFirewall
+						startFirewall
+					fi
+					;;
+				Q|q|X|x) exit ;;
+				C|c)
+					WLANderlustConfigurationMenu
+					;;
+				M|m)
+					configureWiFiManual
+					;;
+				'') ;;
+				*)
+					if $SCANFORNETWORKS && echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${SSIDS[$REPLY]}" ]; then
+						echo
+						_SSID="${SSIDS[$REPLY]}"
+						echo "SSID: $_SSID"
+						SSIDINFO=`echo -n "$WIFIINFO" | fgrep -B 5 "  ESSID:\"$_SSID\""`
+						configureWiFi "$_SSID" "$SSIDINFO"
+						break
+					else
+						echo -en '\t\e[1m\e[31mInvalid input\e[0m\r'
+					fi
+					;;
+			esac
+		fi
 
-	storeState
+		storeState
 	done
 }
 
-if $INTERACTIVE; then
+if $INTERACTIVE && ! $STATUS; then
 	if $ROOT; then
 		WLANderlustMenu
 	else
+		getWiFiStatus
+		getNetworkStatus
 		echo -e '\e[1mWLANderlust'
 		echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
-		getWiFiStatus
+		showWiFiStatus
 		isCaptivePortalPresent
-		getNetworkStatus
+		showNetworkStatus
 		echo
 
 		if (! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
@@ -1275,31 +1351,30 @@ if $INTERACTIVE; then
 			solveCaptivePortal
 			storeState
 		fi
+
 		echo 'Run as root for more options'
 	fi
 else
-	getWiFiStatus
-	if $ISWIFIINTERFACE && [ "$WPASTATE" != 'COMPLETED' ]; then
-		logMessage "Interface $INTERFACE is not connected"
-	else
 		if $ROOT; then
 			$STOPFIREWALL && stopFirewall
 			$STOPVPN && stopVPN
 			$STOPIPOVERDNS && stopIPoverDNStunneling
-		fi
-		isCaptivePortalPresent
-		getNetworkStatus
-		(! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) &&
-			[ "$CAPTIVEPORTALSTATE" != 'none' ] &&
-			[ "$CAPTIVEPORTALSTATE" != 'solved' ] &&
-			$SOLVE && 
-			solveCaptivePortal
-		if $ROOT; then
+			getWiFiStatus
+			getNetworkStatus
+			showWiFiStatus
+			isCaptivePortalPresent
+			$SOLVE && solveCaptivePortal
 			$STARTIPOVERDNS && startIPoverDNStunneling
 			$STARTVPN && startVPN
 			$STARTFIREWALL && startFirewall
+			$SWITCHHOSTAPCHANNEL && switchHostAPchannel
+		else
+			getWiFiStatus
+			getNetworkStatus
+			showWiFiStatus
+			isCaptivePortalPresent
+			$SOLVE && solveCaptivePortal
 		fi
-		getNetworkStatus
-	fi
+		showNetworkStatus
 	storeState
 fi

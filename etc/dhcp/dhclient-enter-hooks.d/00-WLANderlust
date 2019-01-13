@@ -9,7 +9,7 @@ fi
 # Get the Host AP interface
 if [ -f '/etc/hostapd/hostapd.conf' ]; then
 	HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' '/etc/hostapd/hostapd.conf'`
-	# Return if interface is the Host AP interface
+	# Return if the interface is the Host AP interface
 	if [ "$interface" = "$HOSTAPINTERFACE" ]; then
 		return
 	fi
@@ -22,6 +22,10 @@ DEFAULTCONFIGFILE="$CONFIGPATH/WLANderlust.conf"
 [ -z "$CONFIGFILE" ] && CONFIGFILE="$DEFAULTCONFIGFILE"
 # Load the WLANderlust configuration file
 [ -f "$CONFIGFILE" ] && . "$CONFIGFILE"
+
+[ "$AUTOSOLVECAPTIVEPORTAL" != 'false' ] && AUTOSOLVECAPTIVEPORTAL='true'
+[ "$AUTOSTARTIPOVERDNS" != 'true' ] && AUTOSTARTIPOVERDNS='false'
+[ "$AUTOSTARTVPN" != 'true' ] && AUTOSTARTVPN='false'
 
 case $reason in
 	RELEASE|EXPIRE|STOP)

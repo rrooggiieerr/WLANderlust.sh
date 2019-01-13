@@ -23,6 +23,10 @@ DEFAULTCONFIGFILE="$CONFIGPATH/WLANderlust.conf"
 # Load the WLANderlust configuration file
 [ -f "$CONFIGFILE" ] && . "$CONFIGFILE"
 
+[ "$AUTOSOLVECAPTIVEPORTAL" != 'false' ] && AUTOSOLVECAPTIVEPORTAL='true'
+[ "$AUTOSTARTIPOVERDNS" != 'true' ] && AUTOSTARTIPOVERDNS='false'
+[ "$AUTOSTARTVPN" != 'true' ] && AUTOSTARTVPN='false'
+
 case $reason in
 	BOUND|REBIND|REBOOT)
 		WLANDERLUSTCOMMAND="/usr/local/bin/WLANderlust -i '$interface'"

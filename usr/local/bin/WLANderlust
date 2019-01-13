@@ -134,7 +134,10 @@ setConfigValue()
 	# Check if configuration key is already set
 	if grep -q "^$1=" <<< "$CONFIG"; then
 		# If configuration key is set, update value
-		CONFIG=`sed "s|^$1=.*$|$1='$2'|" <<< "$CONFIG"`
+		# Escape for sed special characters
+		_KEY=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$1"`
+		_VALUE=`sed -e 's/[\/&]/\\\&/g' <<< "$2"`
+		CONFIG=`sed "s|^\($_KEY\)=.*$|\1='$_VALUE'|" <<< "$CONFIG"`
 	else
 		# If configuration key is not set, add new key with value
 		CONFIG+="
@@ -367,12 +370,16 @@ setState()
 		STATE="$1='$2'"
 	elif grep -q "^$1=" <<< "$STATE"; then
 		# If configuration key is set, update value
-		STATE=`sed "s|^$1=.*$|$1='$2'|" <<< "$STATE"`
+		# Escape for sed special characters
+		_KEY=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$1"`
+		_VALUE=`sed -e 's/[\/&]/\\\&/g' <<< "$2"`
+		STATE=`sed "s/^\($_KEY\)=.*$/\1='$_VALUE'/" <<< "$STATE"`
 	else
 		# If configuration key is not set, add new key with value
 		STATE+="
 $1='$2'"
 	fi
+	#ToDo Probably need to do some escapeing here too
 	eval "$1='$2'"
 }
 
@@ -702,6 +709,7 @@ getNetworkStatus()
 	grep -q '<UP' <<< "$IFCONFIG" &&
 		INTERFACEISUP='true' ||
 		INTERFACEISUP='false'
+	MACADDRESS=`sed -n 's|^.* ether \([a-z0-9:]*\) .*$|\1|p' <<< "$IFCONFIG"`
 
 	if ! $INTERFACEISUP; then
 		# Interface is down
@@ -709,32 +717,16 @@ getNetworkStatus()
 		setState 'NETMASK' ''
 		setState 'GATEWAY' ''
 		setState 'EXTERNALIP' ''
-	elif ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
-		setState 'IPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
-		setState 'NETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
-		MACADDRESS=`sed -n 's|^.* ether \([a-z0-9:]*\) .*$|\1|p' <<< "$IFCONFIG"`
-
-		ROUTE=`route -n`
-		[ "$INTERFACE" = "$DEFAULTROUTEINTERFACE" ] &&
-			setState 'GATEWAY' `sed -n "s|^0\.0\.0\.0 *\([0-9.]*\) .* $INTERFACE|\1|p" <<< "$ROUTE"` ||
-			setState 'GATEWAY' `sed -n "s|[0-9.]* *\([0-9.]*\) .* $INTERFACE|\1|p" <<< "$ROUTE" | grep -v "0\.0\.0\.0" | uniq`
-		#setState 'GATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $INTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
-
-		if [ ! -z "$WHATISMYIPURL" ]; then
-			if [ "$VPNSTATE" = 'started' ]; then
-				setState 'EXTERNALIP' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
-			elif [ "$IPOVERDNSSTATE" = 'started' ]; then
-				setState 'EXTERNALIP' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
-			elif ([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]); then
-				setState 'EXTERNALIP' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
-			fi
-		fi
-	else
+	elif $ISWIFIINTERFACE && [ "$WPASTATE" != 'COMPLETED' ]; then
 		# WiFi is not connected
 		setState 'IPADDRESS' ''
 		setState 'NETMASK' ''
 		setState 'GATEWAY' ''
 		setState 'EXTERNALIP' ''
+	elif ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
+		setState 'IPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		setState 'NETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+		setState 'GATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $INTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
 	fi
 
 	storeState
@@ -802,7 +794,9 @@ scanForNetworks()
 	done
 
 	WIFIINFO=`grep -B 5 -A 4 'ESSID:' <<< "$IWLISTSCAN" | sed 's|^  \s*|  |'`
-	WIFIINFO=`tac <<< "$WIFIINFO" | sed -n "/Mode:Master/I,+10 p" | grep -A 5 'ESSID:' | sed "/ESSID:\"$HOSTAPSSID\"/I,+6 d" | tac`
+	# Escape for sed special characters
+	_HOSTAPSSID=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$HOSTAPSSID"`
+	WIFIINFO=`tac <<< "$WIFIINFO" | sed -n "/Mode:Master/I,+10 p" | grep -A 5 'ESSID:' | sed "/ESSID:\"$_HOSTAPSSID\"/I,+6 d" | tac`
 
 	[ -z "$WIFIINFO" ] &&
 		echo ' - No WiFi networks found' ||

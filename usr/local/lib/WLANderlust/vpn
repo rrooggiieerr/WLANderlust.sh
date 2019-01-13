@@ -23,6 +23,8 @@ VPNINTERFACE=`getState 'VPNINTERFACE'`
 VPNIPADDRESS=`getState 'VPNIPADDRESS'`
 VPNNETMASK=`getState 'VPNNETMASK'`
 VPNGATEWAY=`getState 'VPNGATEWAY'`
+VPNBINDINTERFACE=`getState 'VPNBINDINTERFACE'`
+VPNBINDIPADDRESS=`getState 'VPNBINDIPADDRESS'`
 
 case "$1" in
 	'CONFIGURE')
@@ -71,11 +73,11 @@ case "$1" in
 					B|b) break ;;
 					*)
 						if [ "$IPOVERDNSSTATE" = 'started' ]; then
-							VPNBINDINTERFACE="$IPOVERDNSINTERFACE"
-							VPNBINDIPADDRESS="$IPOVERDNSIPADDRESS"
+							setState 'VPNBINDINTERFACE' "$IPOVERDNSINTERFACE"
+							setState 'VPNBINDIPADDRESS' "$IPOVERDNSIPADDRESS"
 						else
-							VPNBINDINTERFACE="$INTERFACE"
-							VPNBINDIPADDRESS="$IPADDRESS"
+							setState 'VPNBINDINTERFACE' "$INTERFACE"
+							setState 'VPNBINDIPADDRESS' "$IPADDRESS"
 						fi
 
 						if echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${CONFIGURABLEVPNS[$REPLY]}" ]; then
@@ -101,23 +103,23 @@ case "$1" in
 		elif [ "$VPNSTATE" != 'stopped' ]; then
 			logError 'VPN is in error mode'
 			return 1
-		#elif [ "$IPOVERDNSSTATE" = 'started' ] && ! $FORCE; then
-		#	logError 'IP over DNS tunnel is active, not setting up VPN'
-		#	return 1
 		elif [ -z "$VPNTYPE" ] || [ "$VPNTYPE" = 'none' ]; then
 			logError 'No VPN configured'
 			return 1
 		elif [ "$VPNTYPE" != 'any' ] && [ ! -f "$LIBPATH/vpn.d/$VPNTYPE" ]; then
 			logError "Invallid VPN type $VPNTYPE"
 			return 1
+		elif [ "$IPOVERDNSSTATE" != 'stopped' ] && [ "$IPOVERDNSSTATE" != 'started' ]; then
+			logError 'IP over DNS tunnel is in error mode'
+			return 1
 		fi
 
 		if [ "$IPOVERDNSSTATE" = 'started' ]; then
-			VPNBINDINTERFACE="$IPOVERDNSINTERFACE"
-			VPNBINDIPADDRESS="$IPOVERDNSIPADDRESS"
+			setState 'VPNBINDINTERFACE' "$IPOVERDNSINTERFACE"
+			setState 'VPNBINDIPADDRESS' "$IPOVERDNSIPADDRESS"
 		else
-			VPNBINDINTERFACE="$INTERFACE"
-			VPNBINDIPADDRESS="$IPADDRESS"
+			setState 'VPNBINDINTERFACE' "$INTERFACE"
+			setState 'VPNBINDIPADDRESS' "$IPADDRESS"
 		fi
 
 		if [ "$VPNTYPE" = 'any' ]; then
@@ -210,10 +212,15 @@ case "$1" in
 		$DEBUGLOGGING && logMessage "$VPNINTERFACE = $DEFAULTROUTEINTERFACE"
 		if [ "$VPNINTERFACE" = "$DEFAULTROUTEINTERFACE" ]; then
 			logMessage "Route trafic over $INTERFACE"
+			echo "GATEWAY=$GATEWAY"
 			GATEWAY=`route -n | sed -n "s|^$VPNSERVERIPADDRESS *\([0-9.]*\) .* $INTERFACE|\1|p"`
-			[ ! -z "$GATEWAY" ] &&
-				ip route del "$VPNSERVERIPADDRESS" via "$GATEWAY" &&
+			GATEWAY=`route -n | sed -n "s|^[0-9.]* *\([0-9.]*\) .* wlan1|\1|p" | grep -v '0\.0\.0\.0'`
+			if [ ! -z "$GATEWAY" ]; then
+				echo ip route del "$VPNSERVERIPADDRESS" via "$GATEWAY"
+				ip route del "$VPNSERVERIPADDRESS" via "$GATEWAY"
+				echo ip route replace default via "$GATEWAY"
 				ip route replace default via "$GATEWAY"
+			fi
 			setState 'DEFAULTROUTEINTERFACE' "$INTERFACE"
 		fi
 
@@ -223,47 +230,50 @@ case "$1" in
 		setState 'VPNIPADDRESS' ''
 		setState 'VPNNETMASK' ''
 		setState 'VPNGATEWAY' ''
+		setState 'VPNBINDINTERFACE' ''
+		setState 'VPNBINDIPADDRESS' ''
 		storeState
 
 		return 0
 		;;
 	'STATE')
-		VPNSTATE=`getState 'VPNSTATE'`
-		ACTIVEVPNTYPE=`getState 'ACTIVEVPNTYPE'`
-		VPNINTERFACE=`getState 'VPNINTERFACE'`
-		VPNIPADDRESS=`getState 'VPNIPADDRESS'`
-		VPNNETMASK=`getState 'VPNNETMASK'`
-		VPNGATEWAY=`getState 'VPNGATEWAY'`
-
-		if [ -z "$VPNSTATE" ]; then
+		if [ ! -z "$VPNSTATE" ]; then
 			setState 'VPNSTATE' 'stopped'
 			setState 'ACTIVEVPNTYPE' 'none'
 			setState 'VPNINTERFACE' ''
 			setState 'VPNIPADDRESS' ''
 			setState 'VPNNETMASK' ''
 			setState 'VPNGATEWAY' ''
+			setState 'VPNBINDINTERFACE' ''
+			setState 'VPNBINDIPADDRESS' ''
+
+			for SCRIPTNAME in $(run-parts --list "$LIBPATH/vpn.d"); do
+				if . "$SCRIPTNAME" STATE; then
+					setState 'VPNSTATE' 'started'
+					setState 'ACTIVEVPNTYPE' `basename "$SCRIPTNAME"`
+					setState 'VPNINTERFACE' "$VPNINTERFACE"
+					IFCONFIG=`ifconfig "$VPNINTERFACE"`
+					setState 'VPNIPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+					setState 'VPNNETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
+					setState 'VPNGATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $VPNINTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
+
+					if [ "$IPOVERDNSSTATE" = 'started' ]; then
+						setState 'VPNBINDINTERFACE' "$IPOVERDNSINTERFACE"
+						setState 'VPNBINDIPADDRESS' "$IPOVERDNSIPADDRESS"
+					else
+						setState 'VPNBINDINTERFACE' "$INTERFACE"
+						setState 'VPNBINDIPADDRESS' "$IPADDRESS"
+					fi
+
+					break
+				fi
+			done
+			SCRIPTNAME="$0"
+
 			storeState
-			$VERBOSELOGGING && logMessage 'VPN is not active'
 		fi
 
-		#for SCRIPTNAME in $(run-parts --list "$LIBPATH/vpn.d"); do
-		#	if . "$SCRIPTNAME" STATE; then
-		#		setState 'VPNSTATE' 'started'
-		#		setState 'ACTIVEVPNTYPE' `basename "$SCRIPTNAME"`
-		#		setState 'VPNINTERFACE' "$VPNINTERFACE"
-		#		IFCONFIG=`ifconfig "$VPNINTERFACE"`
-		#		setState 'VPNIPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
-		#		setState 'VPNNETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
-		#		setState 'VPNGATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $VPNINTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
-		#		storeState
-		#		$VERBOSELOGGING && logMessage 'VPN is active'
-		#		break
-		#	fi
-		#done
-		#SCRIPTNAME="$0"
-
-		$DEBUGLOGGING && logMessage "VPN is $IPOVERDNSSTATE"
-		storeState
+		$VERBOSELOGGING && logMessage "VPN is $VPNSTATE"
 
 		[ "$VPNSTATE" = 'started' ] &&
 			return 0

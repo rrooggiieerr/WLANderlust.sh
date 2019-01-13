@@ -160,6 +160,7 @@ ToDo
 		fi
 
 		echo
+		apt-get install -y rng-tools
 		echo 'Installing VPN packages'
 		apt-get install -y openvpn pptp-linux
 		update-rc.d -f openvpn remove

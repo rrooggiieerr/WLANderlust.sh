@@ -237,7 +237,7 @@ case "$1" in
 		return 0
 		;;
 	'STATE')
-		if [ ! -z "$VPNSTATE" ]; then
+		if [ -z "$VPNSTATE" ]; then
 			setState 'VPNSTATE' 'stopped'
 			setState 'ACTIVEVPNTYPE' 'none'
 			setState 'VPNINTERFACE' ''

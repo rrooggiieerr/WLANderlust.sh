@@ -27,7 +27,7 @@ case "$1" in
 	'CONFIGURE')
 		# Ask for VPN server hostname
 		while true; do
-			read -p 'SSH tunnel server hostname: ' -e -i "$SSHTUNNELSERVERHOSTNAME" 'SSHTUNNELSERVERHOSTNAME'
+			read -r -p 'SSH tunnel server hostname: ' -e -i "$SSHTUNNELSERVERHOSTNAME" 'SSHTUNNELSERVERHOSTNAME'
 			# Test if hostname can be resolved
 			if ! VPNSERVERIPADDRESS=`host -t A -W $TIMEOUT "$SSHTUNNELSERVERHOSTNAME"`; then
 				logError "SSH tunnel server hostname $SSHTUNNELSERVERHOSTNAME could not be resolved"
@@ -36,31 +36,42 @@ case "$1" in
 				if ! nc -s "$VPNBINDIPADDRESS" -4 -w "$TIMEOUT" -z "$VPNSERVERIPADDRESS" 22; then
 					logError "Unable to connect to SSH port on VPN server IP address $VPNSERVERIPADDRESS"
 				else
-					#ToDo Add server to known_hosts
 					break
 				fi
 			fi
 		done
-		read -p 'SSH tunnel server username: ' -e -i "$SSHTUNNELUSERNAME" 'SSHTUNNELUSERNAME'
-		#ToDo Generate private key
+
+		read -r -p 'SSH tunnel server username: ' -e -i "$SSHTUNNELUSERNAME" 'SSHTUNNELUSERNAME'
+		#ToDo Input validation
+
+		# Generate private key
 		if [ ! -f ~/'.ssh/id_rsa' ]; then
-			ssh-keygen
+			logMessage 'Generating SSH public/private key combo'
+			ssh-keygen -b 2048 -t rsa -f ~/.ssh/id_rsa -q -N ""
 		fi
-		#ToDo Try to install private key on SSH server
+
 		logMessage "Your public rsa key, use this to configure your SSH tunnel server $SSHTUNNELSERVERHOSTNAME"
 		logMessage `cat ~/'.ssh/id_rsa.pub'`
-		#read -c
-		read -p 'Test connection (Y/N)? ' -i 'Y'
+
+		# Add server to known_hosts
+		#ssh-keyscan -H -4 "$VPNSERVERIPADDRESS" >> ~/.ssh/known_hosts 
+
+		#ToDo Try to install private key on SSH server
+
+		read -r -p 'Test connection (Y/N)? ' -i 'Y'
 		case "$REPLY" in
 			'Y'|'y')
-				logMessage 'Testing SSH connection'
+				logMessage 'Testing SSH tunnel connection'
 				. "$SCRIPTNAME" 'START' && . "$SCRIPTNAME" 'STOP' &&
 					logMessage 'Success!' ||
 					logError 'Failure!'
 				;;
 		esac
 
-		return 1
+		# Just wait a bit to show the result
+		sleep 3
+
+		return 0
 		;;
 	'START')
 		if [ -z "$SSHTUNNELSERVERHOSTNAME" ]; then
@@ -73,7 +84,6 @@ case "$1" in
 			logError "SSH tunnel server hostname $SSHTUNNELSERVERHOSTNAME could not be resolved"
 			return 1
 		else
-			#ToDo Pick a 'random' IP address if multiple addresses have been returned
 			setState 'VPNSERVERIPADDRESS' `sed 's/^.* has address //g' <<< "$VPNSERVERIPADDRESS" | head -n 1`
 
 			if ! nc -s "$VPNBINDIPADDRESS" -4 -w "$TIMEOUT" -z "$VPNSERVERIPADDRESS" 22 > /dev/null 2>&1; then
@@ -82,7 +92,7 @@ case "$1" in
 			fi
 
 			# Create TUN interface on host
-			if ssh -o "ConnectTimeout=$TIMEOUT" -b "$VPNBINDIPADDRESS" "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" '/sbin/ifconfig tun0 > /dev/null 2>&1 || sudo ip tuntap add mode tun user vpn group vpn tun0'; then
+			if ssh -4 -o "ConnectTimeout=$TIMEOUT" -b "$VPNBINDIPADDRESS" "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" '/sbin/ifconfig tun0 > /dev/null 2>&1 || sudo ip tuntap add mode tun user vpn group vpn tun0'; then
 				logMessage "Created TUN interface on SSH tunnel server $SSHTUNNELSERVERHOSTNAME"
 			else
 				logError "Failed to created TUN interface on SSH tunnel server $SSHTUNNELSERVERHOSTNAME"
@@ -110,8 +120,7 @@ case "$1" in
 				return 1
 			fi
 
-
-			if [ "$IPOVERDNSSTATE" = 'started' ] && ssh -f \
+			if [ "$IPOVERDNSSTATE" = 'started' ] && ssh -4 -f \
 				-M -S "$SSHTUNNELCTRLSOCKET" \
 				-o 'PermitLocalCommand=yes' \
 				-o "LocalCommand=ifconfig '$VPNINTERFACE' 192.168.244.2 pointopoint 192.168.244.1 netmask 255.255.255.0" \
@@ -122,8 +131,9 @@ case "$1" in
 				-w 0:0 "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" \
 				'sudo ifconfig tun0 192.168.244.1 pointopoint 192.168.244.2 netmask 255.255.255.0'; then
 				while [ ! -e "$SSHTUNNELCTRLSOCKET" ]; do sleep 0.1; done
+				ssh -4 -S "$SSHTUNNELCTRLSOCKET" -O check "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" 2>&1
 				logMessage 'Created SSH Tunnel'
-			elif ssh -f \
+			elif ssh -4 -f \
 				-M -S "$SSHTUNNELCTRLSOCKET" \
 				-o 'PermitLocalCommand=yes' \
 				-o "LocalCommand=ifconfig '$VPNINTERFACE' 192.168.244.2 pointopoint 192.168.244.1 netmask 255.255.255.0" \
@@ -134,12 +144,12 @@ case "$1" in
 				-w 0:0 "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" \
 				'sudo ifconfig tun0 192.168.244.1 pointopoint 192.168.244.2 netmask 255.255.255.0'; then
 				while [ ! -e "$SSHTUNNELCTRLSOCKET" ]; do sleep 0.1; done
+				ssh -4 -S "$SSHTUNNELCTRLSOCKET" -O check "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" 2>&1
 				logMessage 'Created SSH Tunnel'
 			else
 				logError 'Failed to create SSH Tunnel'
 				return 1
 			fi
-
 
 			VPNSERVERHOSTNAME="$SSHTUNNELSERVERHOSTNAME"
 			setState 'VPNGATEWAY' '192.168.244.1'
@@ -154,34 +164,37 @@ case "$1" in
 
 			logMessage 'Stopping SSH tunnel'
 
-			if ssh -S "$SSHTUNNELCTRLSOCKET" -O exit "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS"; then
+			if ssh -4 -S "$SSHTUNNELCTRLSOCKET" -O exit "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS"; then
 				logMessage 'SSH tunnel stopped'
 			else
 				logError "Failed to stop SSH tunnel"
+				setState 'VPNSTATE' 'failure'
 				return 1
-			fi
-
-			# Check if TUN interface exists, this is just paranoia
-			if ifconfig "$VPNINTERFACE" > /dev/null 2>&1; then
-				# Remove local TUN interface
-				$VERBOSELOGGING && logMessage "Remove local TUN interface $VPNINTERFACE"
-				if ip tuntap del mode tun "$VPNINTERFACE"; then
-					$VERBOSELOGGING && logMessage "Local TUN interface $VPNINTERFACE removed"
-				else
-					logError "Failed to remove local TUN interface $VPNINTERFACE"
-					return 1
-				fi
-			else
-				logError "TUN interface $VPNINTERFACE does not exist, this should not happen"
 			fi
 		fi
 
+		if [ ! -z "$VPNINTERFACE" ] && ifconfig "$VPNINTERFACE" > /dev/null 2>&1; then
+			# Remove local TUN interface
+			$VERBOSELOGGING && logMessage "Remove local TUN interface $VPNINTERFACE"
+			if ip tuntap del mode tun "$VPNINTERFACE"; then
+				$VERBOSELOGGING && logMessage "Local TUN interface $VPNINTERFACE removed"
+			else
+				logError "Failed to remove local TUN interface $VPNINTERFACE"
+				setState 'VPNSTATE' 'failure'
+				return 1
+			fi
+		fi
+
+		setState 'VPNSTATE' 'stopped'
 		return 0
 		;;
 	'STATE')
-		if [ -e "$SSHTUNNELCTRLSOCKET" ]; then
-			VPNINTERFACE=`getState 'VPNINTERFACE'`
-			VPNSERVERIPADDRESS=`getState 'VPNSERVERIPADDRESS'`
+		echo "VPNSTATE=$VPNSTATE"
+		if [ "$VPNSTATE" = 'started' ] && [ ! -e "$SSHTUNNELCTRLSOCKET" ]; then
+			setState 'VPNSTATE' 'failure'
+		elif [ "$VPNSTATE" = 'started' ] && ! ssh -4 -S "$SSHTUNNELCTRLSOCKET" -O check "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" 2>&1; then
+			setState 'VPNSTATE' 'failure'
+		elif [ "$VPNSTATE" = 'started' ]; then
 			return 0
 		fi
 

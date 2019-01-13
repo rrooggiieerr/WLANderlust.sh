@@ -278,10 +278,21 @@ TIMESTAMP=`date +%Y%m%d%H%M%S`
 
 # Get the Host AP interface, SSID and channel
 if [ -f '/etc/hostapd/hostapd.conf' ]; then
-	HOSTAPDCONF=`cat '/etc/hostapd/hostapd.conf'`
-	HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' <<< "$HOSTAPDCONF"`
-	HOSTAPSSID=`sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$HOSTAPDCONF"`
-	HOSTAPCHANNEL=`/sbin/iw dev "$HOSTAPINTERFACE" info | sed -n 's|^.*channel \([0-9]\+\) .*$|\1|p'`
+	_HOSTAPDCONF=`cat '/etc/hostapd/hostapd.conf'`
+	HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' <<< "$_HOSTAPDCONF"`
+	HOSTAPSSID=`sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$_HOSTAPDCONF"`
+
+	_IFCONFIG=`ifconfig "$HOSTAPINTERFACE"`
+	grep -q '<UP' <<< "$_IFCONFIG" &&
+		HOSTAPSTATE='started' ||
+		HOSTAPSTATE='stopped'
+	HOSTAPIPADDRESS=`sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$_IFCONFIG"`
+	HOSTAPNETMASK=`sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$_IFCONFIG"`
+
+	_IWDEVINFO=`/sbin/iw dev "$HOSTAPINTERFACE" info`
+	HOSTAPCHANNEL=`sed -n 's|^.*channel \([0-9]\+\) .*$|\1|p' <<< "$_IWDEVINFO"`
+	HOSTAPBSSID=`sed -n 's|^.*addr \([0-9a-f:]\+\)$|\1|p' <<< "$_IWDEVINFO"`
+	HOSTAPTXPOWER=`sed -n 's|.*txpower \([0-9.]*\) dBm$|\1|p' <<< "$_IWDEVINFO"`
 fi
 
 DEFAULTROUTEINTERFACE=`route -n | sed -n 's|^0\.0\.0\.0 .* \([^ ]*\)$|\1|p'`
@@ -749,6 +760,7 @@ showNetworkStatus()
 				MESSAGE+=", external IP address: $EXTERNALIP"
 			logMessage "$MESSAGE"
 
+			# IP over DNS tunneling
 			if [ "$IPOVERDNSSTATE" = 'started' ]; then
 				MESSAGE="IP over DNS tunnel is active using interface $IPOVERDNSINTERFACE, server: $IPOVERDNSSERVER, mode: $IPOVERDNSMODE"
 				MESSAGE+=" , IP address: $IPOVERDNSIPADDRESS, netmask: $IPOVERDNSNETMASK"
@@ -763,6 +775,7 @@ showNetworkStatus()
 				logMessage 'IP over DNS tunnel error'
 			fi
 
+			# VPN
 			if [ "$VPNSTATE" = 'started' ]; then
 				MESSAGE="VPN type $VPNNAME is active using interface $VPNINTERFACE, server: $VPNSERVERHOSTNAME, IP address: $VPNIPADDRESS, netmask: $VPNNETMASK"
 				[ ! -z "$VPNGATEWAY" ] &&
@@ -779,6 +792,13 @@ showNetworkStatus()
 		fi
 	else
 		logError "Interface $INTERFACE is not connected"
+	fi
+
+	# Host Access Pont
+	if [ "$HOSTAPSTATE" = 'started' ]; then
+		MESSAGE="Host Access Point \"$HOSTAPSSID\" ($HOSTAPBSSID) is active using interface $HOSTAPINTERFACE, channel: $HOSTAPCHANNEL, $HOSTAPTXPOWER dBm"
+		MESSAGE+=", IP address: $HOSTAPIPADDRESS, netmask: $HOSTAPNETMASK"
+		logMessage "$MESSAGE"
 	fi
 }
 

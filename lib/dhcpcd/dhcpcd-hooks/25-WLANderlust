@@ -6,10 +6,22 @@ if [ "$interface" = 'lo' ]; then
 	return
 fi
 
-# Return if the interface is the Host AP interface
-if [ "$interface" = "$HOSTAPINTERFACE" ]; then
-	return
+# Get the Host AP interface
+if [ -f '/etc/hostapd/hostapd.conf' ]; then
+	HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' '/etc/hostapd/hostapd.conf'`
+	# Return if the interface is the Host AP interface
+	if [ "$interface" = "$HOSTAPINTERFACE" ]; then
+		return
+	fi
 fi
+
+# Some default settings
+DEFAULTCONFIGPATH='/etc/WLANderlust'
+[ -z "$CONFIGPATH" ] && CONFIGPATH="$DEFAULTCONFIGPATH"
+DEFAULTCONFIGFILE="$CONFIGPATH/WLANderlust.conf"
+[ -z "$CONFIGFILE" ] && CONFIGFILE="$DEFAULTCONFIGFILE"
+# Load the WLANderlust configuration file
+[ -f "$CONFIGFILE" ] && . "$CONFIGFILE"
 
 case $reason in
 	BOUND|REBIND|REBOOT)

@@ -367,9 +367,13 @@ wpa_pairwise=TKIP
 rsn_pairwise=CCMP"
 		fi
 		# Check if HOSTAPDCONF and /etc/hotapd/hostapd.conf differ
+		HOSTAPDHASCHANGED='false'
 		if ! echo "$HOSTAPDCONF" | diff -q /etc/hostapd/hostapd.conf - > /dev/null; then
 			mv /etc/hostapd/hostapd.conf /etc/hostapd/hostapd.conf.old
 			echo "$HOSTAPDCONF" > /etc/hostapd/hostapd.conf
+			chown --reference=/etc/hostapd/hostapd.conf.old /etc/hostapd/hostapd.conf
+			chmod --reference=/etc/hostapd/hostapd.conf.old /etc/hostapd/hostapd.conf
+			HOSTAPDHASCHANGED='true'
 		fi
 
 		# /etc/default/hostapd
@@ -377,7 +381,7 @@ rsn_pairwise=CCMP"
 
 		#ToDo /etc/avahi/avahi-daemon.conf 
 
-		if $ISREMOTELOGIN; then
+		if $HOSTAPDHASCHANGED && $ISREMOTELOGIN; then
 			echo
 			# Just wait a bit to show the result
 			sleep 2
@@ -403,7 +407,7 @@ URL: pi@wlanderlust.local or pi@$HOSTAPIPADDRESS
 			INSTALLATIONSTATE='wpa_supplicant'
 			echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
 			reboot
-		else
+		elif $HOSTAPDHASCHANGED; then
 			# Restart Host AP interface
 			# I have not tested this as I always connect remotely
 			ifdown "$HOSTAPINTERFACE"
@@ -654,6 +658,7 @@ ToDo
 
 		if [ ! -f /etc/sudoers.d/wlanderlust ]; then
 			echo 'wlanderlust ALL=(ALL) NOPASSWD: /usr/local/bin/WLANderlust' > /etc/sudoers.d/wlanderlust
+			chown --reference=/etc/sudoers /etc/sudoers.d/wlanderlust
 			chmod --reference=/etc/sudoers /etc/sudoers.d/wlanderlust
 		fi
 

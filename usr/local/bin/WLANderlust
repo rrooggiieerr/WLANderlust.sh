@@ -68,12 +68,12 @@ logError()
 }
 
 # macOS compatibility
-if ! which realpath; then
+if ! which realpath > /dev/null; then
 	realpath() {
 		[[ $1 = /* ]] && echo "$1" || echo "$PWD/${1#./}"
 	}
 fi
-if ! which md5sum; then
+if ! which md5sum > /dev/null; then
 	md5sum() {
 		[ -z "$1" ] &&
 			md5 ||

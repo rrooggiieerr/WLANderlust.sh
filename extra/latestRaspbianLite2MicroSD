@@ -6,7 +6,7 @@ RASPBIANLATESTURL="https://$RASPBIANHOST/raspbian_lite_latest"
 # Check if this script supports the OS
 if [ `uname` != 'Linux' ] && [ `uname` != 'Darwin' ]; then
 	echo 'This script is written for Linux or OS X'
-	exit
+	exit 1
 fi
 
 if [ `uname` = 'Darwin' ] || [ "$CONTINUE" != 'true' ]; then
@@ -37,15 +37,24 @@ if [ `uname` = 'Darwin' ] || [ "$CONTINUE" != 'true' ]; then
 		# Check for latest Raspbian Lite image in current dir
 		RASPBIANIMAGEZIPURL=`curl -4 -Is "$RASPBIANLATESTURL" | sed -n 's|^Location: \(.*\)$|\1|p' | tr -d '\r'`
 		if [ -z "$RASPBIANIMAGEZIPURL" ]; then
-			echo 'Failed to retrieve latest Raspian URL'
-			exit
+			echo 'Failed to retrieve latest Raspian URL.'
+			exit 1
 		fi
 
 		RASPBIANIMAGEZIP=`echo "$RASPBIANIMAGEZIPURL" | sed "s|^.*/||"`
 		if [ ! -f "$RASPBIANIMAGEZIP" ]; then
 			# If not available download latest Raspbian Lite
 			echo 'Latest Raspbian Lite is not yet downloaded, downloading...'
-			curl -4 -L "$RASPBIANIMAGEZIPURL" > "$RASPBIANIMAGEZIP"
+			if ! curl -4 -L -O "$RASPBIANIMAGEZIPURL"; then
+				echo 'Failed to download latest Raspbian Lite.'
+				exit 1
+			fi
+		elif ! unzip -t "$RASPBIANIMAGEZIP" > /dev/null 2>&1; then
+			echo 'Latest Raspbian Lite is not fully downloaded, resuming download...'
+			if ! curl -4 -L -O -C - "$RASPBIANIMAGEZIPURL"; then
+				echo 'Failed to download latest Raspbian Lite.'
+				exit 1
+			fi
 		else
 			echo 'Latest Raspbian Lite is already downloaded'
 		fi
@@ -54,7 +63,7 @@ if [ `uname` = 'Darwin' ] || [ "$CONTINUE" != 'true' ]; then
 	RASPBIANIMAGE=`echo "$RASPBIANIMAGEZIP" | sed 's|\.zip$|.img|'`
 	if [ ! -f "$RASPBIANIMAGE" ]; then
 		if ! unzip "$RASPBIANIMAGEZIP" "$RASPBIANIMAGE"; then
-			echo 'Unzipping the Raspbian Lite archive failed. Exiting script'
+			echo 'Failed to unzipping the Raspbian Lite archive.'
 			exit 1
 		fi
 	fi

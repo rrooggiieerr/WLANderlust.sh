@@ -619,7 +619,7 @@ isCaptivePortalPresent()
 	SCRIPTNAME="$0"
 
 	if [ ! -z "$WHATISMYIPURL" ] && ([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]); then
-		setState 'EXTERNALIP' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+		setState 'EXTERNALIPADDRESS' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
 	fi
 
 	[ "$CAPTIVEPORTALSTATE" = 'present' ] &&
@@ -638,7 +638,7 @@ solveCaptivePortal()
 	SCRIPTNAME="$0"
 
 	if [ ! -z "$WHATISMYIPURL" ] && ([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]); then
-		setState 'EXTERNALIP' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+		setState 'EXTERNALIPADDRESS' `curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
 	fi
 
 	([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]) &&
@@ -753,13 +753,13 @@ getNetworkStatus()
 		setState 'IPADDRESS' ''
 		setState 'NETMASK' ''
 		setState 'GATEWAY' ''
-		setState 'EXTERNALIP' ''
+		setState 'EXTERNALIPADDRESS' ''
 	elif $ISWIFIINTERFACE && [ "$WPASTATE" != 'COMPLETED' ]; then
 		# WiFi is not connected
 		setState 'IPADDRESS' ''
 		setState 'NETMASK' ''
 		setState 'GATEWAY' ''
-		setState 'EXTERNALIP' ''
+		setState 'EXTERNALIPADDRESS' ''
 	elif ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
 		setState 'IPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
 		setState 'NETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
@@ -782,8 +782,8 @@ showNetworkStatus()
 			MESSAGE+=" interface $INTERFACE ($MACADDRESS), IP address: $IPADDRESS, netmask: $NETMASK"
 			[ ! -z "$GATEWAY" ] &&
 				MESSAGE+=", gateway: $GATEWAY"
-			[ ! -z "$EXTERNALIP" ] && [ "$IPOVERDNSSTATE" = 'stopped' ] && [ "$VPNSTATE" = 'stopped' ] &&
-				MESSAGE+=", external IP address: $EXTERNALIP"
+			[ ! -z "$EXTERNALIPADDRESS" ] && [ "$IPOVERDNSSTATE" = 'stopped' ] && [ "$VPNSTATE" = 'stopped' ] &&
+				MESSAGE+=", external IP address: $EXTERNALIPADDRESS"
 			logMessage "$MESSAGE"
 
 			# IP over DNS tunneling
@@ -792,8 +792,8 @@ showNetworkStatus()
 				MESSAGE+=" , IP address: $IPOVERDNSIPADDRESS, netmask: $IPOVERDNSNETMASK"
 				[ ! -z "$IPOVERDNSGATEWAY" ] &&
 					MESSAGE+=", gateway: $IPOVERDNSGATEWAY"
-				[ ! -z "$EXTERNALIP" ] && [ "$VPNSTATE" = 'stopped' ] &&
-					MESSAGE+=", external IP address: $EXTERNALIP"
+				[ ! -z "$EXTERNALIPADDRESS" ] && [ "$VPNSTATE" = 'stopped' ] &&
+					MESSAGE+=", external IP address: $EXTERNALIPADDRESS"
 				logMessage "$MESSAGE"
 			elif [ "$IPOVERDNSSTATE" = 'stopped' ]; then
 				logMessage 'IP over DNS tunnel is not active'
@@ -806,8 +806,8 @@ showNetworkStatus()
 				MESSAGE="VPN type $VPNNAME is active using interface $VPNINTERFACE, server: $VPNSERVERHOSTNAME, IP address: $VPNIPADDRESS, netmask: $VPNNETMASK"
 				[ ! -z "$VPNGATEWAY" ] &&
 					MESSAGE+=", gateway: $VPNGATEWAY"
-				[ ! -z "$EXTERNALIP" ] &&
-					MESSAGE+=", external IP address: $EXTERNALIP"
+				[ ! -z "$EXTERNALIPADDRESS" ] &&
+					MESSAGE+=", external IP address: $EXTERNALIPADDRESS"
 				logMessage "$MESSAGE"
 			elif [ "$VPNSTATE" = 'stopped' ]; then
 				logMessage 'VPN is not active'
@@ -1071,7 +1071,7 @@ isIPoverDNSactive()
 	SCRIPTNAME="$0"
 
 	if [ ! -z "$WHATISMYIPURL" ] && [ "$IPOVERDNSSTATE" = 'started' ]; then
-		setState 'EXTERNALIP' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+		setState 'EXTERNALIPADDRESS' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
 	fi
 }
 isIPoverDNSactive
@@ -1086,7 +1086,7 @@ startIPoverDNStunneling()
 	SCRIPTNAME="$0"
 
 	if [ ! -z "$WHATISMYIPURL" ] && [ "$IPOVERDNSSTATE" = 'started' ]; then
-		setState 'EXTERNALIP' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+		setState 'EXTERNALIPADDRESS' `curl -4 --interface "$IPOVERDNSINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
 	fi
 }
 
@@ -1111,7 +1111,7 @@ isVPNactive()
 	SCRIPTNAME="$0"
 
 	if [ ! -z "$WHATISMYIPURL" ] && [ "$VPNSTATE" = 'started' ]; then
-		setState 'EXTERNALIP' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+		setState 'EXTERNALIPADDRESS' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
 	fi
 }
 isVPNactive
@@ -1126,7 +1126,7 @@ startVPN()
 	SCRIPTNAME="$0"
 
 	if [ ! -z "$WHATISMYIPURL" ] && [ "$VPNSTATE" = 'started' ]; then
-		setState 'EXTERNALIP' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
+		setState 'EXTERNALIPADDRESS' `curl -4 --interface "$VPNINTERFACE" -m "$TIMEOUT" -s "$WHATISMYIPURL" | grep '^[0-9.]*$'`
 	fi
 }
 
@@ -1255,8 +1255,7 @@ WLANderlustMenu()
 
 		$INTERFACEISUP &&
 			$ISWIFIINTERFACE &&
-			[ "$WPASTATE" != 'COMPLETED' ] &&
-			[ ! -z "$IPADDRESS" ] &&
+			([ "$WPASTATE" != 'COMPLETED' ] || [ -z "$EXTERNALIPADDRESS" ]) &&
 			SCANFORNETWORKS='true'
 		$SCANFORNETWORKS &&
 			scanForNetworks &&
@@ -1382,7 +1381,6 @@ WLANderlustMenu()
 						echo "SSID: $_SSID"
 						SSIDINFO=`echo -n "$WIFIINFO" | fgrep -B 5 "  ESSID:\"$_SSID\""`
 						configureWiFi "$_SSID" "$SSIDINFO"
-						break
 					else
 						echo -en '\t\x1B[1m\x1B[31mInvalid input\x1B[0m\r'
 					fi

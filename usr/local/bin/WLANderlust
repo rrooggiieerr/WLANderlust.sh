@@ -105,7 +105,6 @@ DEFAULTLIBPATH="$(realpath "$MYDIR/../lib/WLANderlust/")"
 DEFAULTCONFIG="LOGPATH='$DEFAULTLOGPATH'
 LIBPATH='$DEFAULTLIBPATH'
 COOKIEJAR=''
-PASSWORDSFILE=''
 LOGFILE=''
 GPSFILE=''
 
@@ -149,7 +148,7 @@ setConfigValue()
 	# Check if configuration key is already set
 	if grep -q "^$1=" <<< "$CONFIG"; then
 		# If configuration key is set, update value
-		# Escape for sed special characters
+		# Escape sed special characters
 		_KEY=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$1"`
 		_VALUE=`sed -e 's/[\/&]/\\\&/g' <<< "$2"`
 		CONFIG=`sed "s|^\($_KEY\)=.*$|\1='$_VALUE'|" <<< "$CONFIG"`
@@ -182,10 +181,8 @@ storeConfig()
 }
 
 DEFAULTCOOKIEJAR="$CONFIGPATH/WLANderlust.cookiejar"
-DEFAULTPASSWORDSFILE="$CONFIGPATH/WLANderlust.passwd"
 if ! $ROOT; then
 	DEFAULTCOOKIEJAR=~/'.WLANderlust.cookiejar'
-	DEFAULTPASSWORDSFILE=~/'.WLANderlust.passwd'
 fi
 
 [ -z "$LOGPATH" ] && LOGPATH=`getConfigValue 'LOGPATH'`
@@ -195,7 +192,6 @@ DEFAULTGPSFILE="$LOGPATH/WLANderlust.gps"
 [ -z "$LIBPATH" ] && LIBPATH=`getConfigValue 'LIBPATH'`
 
 [ -z "$COOKIEJAR" ] && COOKIEJAR=`getConfigValue 'COOKIEJAR' "$DEFAULTCOOKIEJAR"`
-[ -z "$PASSWORDSFILE" ] && PASSWORDSFILE=`getConfigValue 'PASSWORDSFILE' "$DEFAULTPASSWORDSFILE"`
 [ -z "$LOGFILE" ] && LOGFILE=`getConfigValue 'LOGFILE' "$DEFAULTLOGFILE"`
 ([ ! -w "$LOGFILE" ] || ([ ! -f "$LOGFILE" ] && [ ! -w `dirname "$LOGFILE"` ])) && LOGFILE='/dev/stdout'
 [ -z "$GPSFILE" ] && GPSFILE=`getConfigValue 'GPSFILE' "$DEFAULTGPSFILE"`
@@ -205,25 +201,6 @@ DEFAULTGPSFILE="$LOGPATH/WLANderlust.gps"
 [ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`
 [ -z "$TIMEOUT" ] && TIMEOUT=`getConfigValue 'TIMEOUT'`
 [ -z "$SHOWPASSWORDS" ] && SHOWPASSWORDS=`getConfigValue 'SHOWPASSWORDS'`
-
-if [ ! -f "$PASSWORDSFILE" ]; then
-	if touch "$PASSWORDSFILE"; then
-		cat << EOF > "$PASSWORDSFILE"
-# The WLANderlust passwords file has the following format:
-# BSSID;"SSID";"domain";latitude;longitude;share;"username";"password"
-# The BSSID field should be a valid BSSID
-# The SSID field is currently not allowed to contain the charachter ;
-# The domain field should be a valid domain name
-# The latitude
-# The longitude
-# The share field is reserved for future functionality and
-# The username field is currently not allowed to contain the charachter ;
-# The password field is allowed to contain any character
-EOF
-	else
-		logError 'Unable to create WLANderlust passwords file'
-	fi
-fi
 
 # Are we in interactive mode?
 [[ -t 1 || -p /dev/stdin ]] &&
@@ -1221,6 +1198,7 @@ WLANderlustConfigurationMenu()
 		if read -r -p 'Option: '; then
 			case "$REPLY" in
 				W|w) editwpa_supplicant ;;
+				C|c) . "$LIBPATH/captiveportal" CONFIGURE ;;
 				D|d) . "$LIBPATH/ipoverdns" CONFIGURE ;;
 				V|v) . "$LIBPATH/vpn" CONFIGURE ;;
 				R|r) toggleRoaming ;;

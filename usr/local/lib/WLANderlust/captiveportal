@@ -7,7 +7,9 @@
 
 # Append default Captive Portal configuration to default configuration
 if ! grep -q "^# Captive Portal detection" <<< "$DEFAULTCONFIG"; then
-	DEFAULTCONFIG="$DEFAULTCONFIG
+	DEFAULTCONFIG+="
+
+PASSWORDSFILE=''
 
 # Captive Portal detection
 CAPTIVEPORTALLOGGING='false'
@@ -25,6 +27,11 @@ CAPTIVEPORTALDETECTIONRESPONSE='^HTTP/1.1 204 No Content'
 #CAPTIVEPORTALDETECTIONRESPONSE='^Microsoft NCSI'"
 fi
 
+DEFAULTPASSWORDSFILE="$CONFIGPATH/WLANderlust.passwd"
+if ! $ROOT; then
+	DEFAULTPASSWORDSFILE=~/'.WLANderlust.passwd'
+fi
+[ -z "$PASSWORDSFILE" ] && PASSWORDSFILE=`getConfigValue 'PASSWORDSFILE' "$DEFAULTPASSWORDSFILE"`
 [ -z "$CAPTIVEPORTALLOGGING" ] && CAPTIVEPORTALLOGGING=`getConfigValue 'CAPTIVEPORTALLOGGING'`
 [ -z "$CAPTIVEPORTALLOGPATH" ] && CAPTIVEPORTALLOGPATH=`getConfigValue 'CAPTIVEPORTALLOGPATH'`
 "$CAPTIVEPORTALLOGGING" && [ ! -d "$CAPTIVEPORTALLOGPATH" ] && mkdir -p "$CAPTIVEPORTALLOGPATH"
@@ -32,7 +39,8 @@ fi
 [ -z "$CAPTIVEPORTALDETECTIONRESPONSE" ] && CAPTIVEPORTALDETECTIONRESPONSE=`getConfigValue 'CAPTIVEPORTALDETECTIONRESPONSE'`
 
 # The Captive Portal password list has the following format:
-# BSSID;"SSID";"domain";latitude;longitude;share;"username";"password"
+# YYYYMMDDhhmmss;BSSID;"SSID";"domain";latitude;longitude;share;"username";"password"
+# The time the entry was added
 # The BSSID field should be a valid BSSID
 # The SSID field is currently not allowed to contain the charachter ;
 # The domain field should be a valid domain name
@@ -48,9 +56,9 @@ fi
 # $3 = hostname or URL
 # $4 = latitude
 # $5 = longitude
+# latitude and longitude are currently ignored
 getCaptivePortalUsername()
 {
-	USERNAME=''
 	if [ ! -f "$PASSWORDSFILE" ]; then
 		logError "Passwords file '$PASSWORDSFILE' does not exist"
 		return 1
@@ -58,23 +66,16 @@ getCaptivePortalUsername()
 
 	# Incase an URL has been provided, take the domain part
 	if grep -iq "^[a-z]*://" <<< "$3"; then
-		DOMAINNAME=`sed 's|^[a-z]*://\([^/]*\)/.*|\1|I' <<< "$3"`
+		_DOMAINNAME=`sed 's|^[a-z]*://\([^/]*\)/.*|\1|I' <<< "$3"`
 	else
-		DOMAINNAME="$3"
+		_DOMAINNAME="$3"
 	fi
+	# Escape sed special characters
+	_SSID=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$2"`
+	_DOMAINNAME=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$_DOMAINNAME"`
 
-	if ENTRY=`sed -n "s/^\(\"$1\";.*\|;\"$2\";.*\|;;\"$DOMAINNAME\";.*\)$/\1/p" "$PASSWORDSFILE"` && [ ! -z "$ENTRY" ]; then
-		#$DEBUGLOGGING && logMessage "Username entry: $ENTRY"
-		USERNAME=`sed -n 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;"\([^;]*\)";.*$|\1|p' <<< "$ENTRY"`
-		#$DEBUGLOGGING && logMessage "Username: $USERNAME"
-		echo "$USERNAME"
-		return 0
-	fi
-
-	# If we are in interactive mode ask the user for the username
-	if $INTERACTIVE; then
-		read -p 'Captive Portal username: ' USERNAME
-		echo "$USERNAME"
+	if _ENTRY=`sed -n "s/^\([^;]*;\"$1\";.*\|[^;]*;;\"$_SSID\";.*\|[^;]*;;;\"$_DOMAINNAME\";.*\)$/\1/p" "$PASSWORDSFILE" | tail -n 1` && [ ! -z "$_ENTRY" ]; then
+		sed -n 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;"\([^;]*\)";.*$|\1|p' <<< "$_ENTRY"
 		return 0
 	fi
 
@@ -87,48 +88,94 @@ getCaptivePortalUsername()
 # $3 = hostname or URL
 # $4 = latitude
 # $5 = longitude
+# latitude and longitude are currently ignored
 getCaptivePortalPassword()
 {
-	PASSWORD=''
 	if [ ! -f "$PASSWORDSFILE" ]; then
-		logError 'Passwords file does not exist'
+		logError "Passwords file '$PASSWORDSFILE' does not exist"
 		return 1
 	fi
 
 	# Incase an URL has been provided, take the domain part
 	if grep -iq "^[a-z]*://" <<< "$3"; then
-		DOMAINNAME=`sed 's|^[a-z]*://\([^/]*\)/.*|\1|I' <<< "$3"`
+		_DOMAINNAME=`sed 's|^[a-z]*://\([^/]*\)/.*|\1|I' <<< "$3"`
 	else
-		DOMAINNAME="$3"
+		_DOMAINNAME="$3"
 	fi
+	# Escape sed special characters
+	_SSID=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$2"`
+	_DOMAINNAME=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$_DOMAINNAME"`
 
-	if ENTRY=`sed -n "s/^\(\"$1\";.*\|;\"$2\";.*\|;;\"$DOMAINNAME\";.*\)$/\1/p" "$PASSWORDSFILE"` && [ ! -z "$ENTRY" ]; then
-		#$DEBUGLOGGING && logMessage "Password entry: $ENTRY"
-		PASSWORD=`sed -n 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;"\(.*\)"$|\1|p' <<< "$ENTRY"`
-		#$DEBUGLOGGING && logMessage "Password: $PASSWORD"
-		echo "$PASSWORD"
-		return 0
-	fi
-
-	# If we are in interactive mode ask the user for the password
-	if $INTERACTIVE; then
-		read -p 'Captive Portal password: ' PASSWORD
-		echo "$PASSWORD"
-		ENTRY=''
-		[ ! -z "$1" ] && ENTRY="$1"
-		[ ! -z "$2" ] && ENTRY="$ENTRY;$2;"
-		[ ! -z "$DOMAINNAME" ] && ENTRY="$ENTRY;$DOMAINNAME;"
-		[ ! -z "$4" ] && ENTRY="$ENTRY;$4;"
-		[ ! -z "$5" ] && ENTRY="$ENTRY;$5;"
-		ENTRY="$ENTRY;N"
-		[ ! -z "$USERNAME" ] && ENTRY="$ENTRY;$USERNAME"
-		[ ! -z "$PASSWORD" ] &&ENTRY="$ENTRY;$PASSWORD"
-		echo "$ENTRY" >> "$PASSWORDSFILE"
-
+	if _ENTRY=`sed -n "s/^\([^;]*;\"$1\";.*\|[^;]*;;\"$_SSID\";.*\|[^;]*;;;\"$_DOMAINNAME\";.*\)$/\1/p" "$PASSWORDSFILE" | tail -n 1` && [ ! -z "$_ENTRY" ]; then
+		sed -n 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;"\(.*\)"$|\1|p' <<< "$_ENTRY"
 		return 0
 	fi
 
 	return 1
+}
+
+# $1 = BSSID
+# $2 = SSID
+# $3 = hostname or URL
+# $4 = latitude
+# $5 = longitude
+# $6 = username
+# $7 = password
+setCaptivePortalCredentials()
+{
+	# Incase an URL has been provided, take the domain part
+	if grep -iq "^[a-z]*://" <<< "$3"; then
+		_DOMAINNAME=`sed 's|^[a-z]*://\([^/]*\)/.*|\1|I' <<< "$3"`
+	else
+		_DOMAINNAME="$3"
+	fi
+	_USERNAME="$6"
+	_PASSWORD="$7"
+
+	if [ ! -f "$PASSWORDSFILE" ]; then
+		if touch "$PASSWORDSFILE"; then
+			chmod 0600 "$PASSWORDSFILE"
+			cat << EOF > "$PASSWORDSFILE"
+# The WLANderlust passwords file has the following format:
+# YYYYMMDDhhmmss;BSSID;"SSID";"domain";latitude;longitude;share;"username";"password"
+# The time the entry was added
+# The BSSID field should be a valid BSSID
+# The SSID field is currently not allowed to contain the charachter ;
+# The domain field should be a valid domain name
+# The latitude is reserved for future functionality
+# The longitude is reserved for future functionality
+# The share field is reserved for future functionality
+# The username field is currently not allowed to contain the charachter ;
+# The password field is allowed to contain any character
+EOF
+		else
+			logError 'Unable to create WLANderlust passwords file'
+			return 1
+		fi
+	fi
+
+	_ENTRY="$TIMESTAMP;"
+	[ ! -z "$1" ] && _ENTRY="$1"
+	_ENTRY+=';'
+	[ ! -z "$2" ] && _ENTRY+="\"$2\""
+	_ENTRY+=';'
+	[ ! -z "$_DOMAINNAME" ] && _ENTRY+="\"$_DOMAINNAME\""
+	_ENTRY+=';'
+	[ ! -z "$4" ] && _ENTRY+="$4"
+	_ENTRY+=';'
+	[ ! -z "$5" ] && _ENTRY+="$5"
+	_ENTRY+=";N;"
+	[ ! -z "$_USERNAME" ] && _ENTRY+="\"$_USERNAME\""
+	_ENTRY+=';'
+	[ ! -z "$_PASSWORD" ] && _ENTRY+="\"$_PASSWORD\""
+	echo "$_ENTRY" >> "$PASSWORDSFILE"
+
+	unset _DOMAINNAME
+	unset _USERNAME
+	unset _PASSWORD
+	unset _ENTRY
+	
+	return 0
 }
 
 recheckCaptivePortal()
@@ -148,12 +195,62 @@ recheckCaptivePortal()
 
 case "$1" in
 	'CONFIGURE')
+		AUTOSOLVECAPTIVEPORTAL=`getConfigValue 'AUTOSOLVECAPTIVEPORTAL'`
 		while true; do
+			CONFIGURABLECAPTIVEPORTALS=()
+			CONFIGUREDCAPTIVEPORTALS=()
 			for SCRIPTNAME in $(run-parts --list "$LIBPATH/captiveportal.d"); do
+				HASCONFIG='false'
 				. "$SCRIPTNAME" ''
+				$HASCONFIG &&
+					CONFIGURABLECAPTIVEPORTALS+=(`basename "$SCRIPTNAME"`)
+				$ISCONFIGURED &&
+					CONFIGUREDCAPTIVEPORTALS+=(`basename "$SCRIPTNAME"`)
 			done
 			SCRIPTNAME="$0"
-			break
+
+			! $VERBOSELOGGING && clear
+			echo -e '\e[2mNot all those who WLANder have lost connection\e[0m'
+			echo 'Captive Portal Configuration Menu'
+			echo
+			for I in ${!CONFIGURABLECAPTIVEPORTALS[@]}; do
+				SCRIPTNAME="$LIBPATH/captiveportal.d/${CONFIGURABLECAPTIVEPORTALS[$I]}"
+				CAPTIVEPORTALNAME=''
+				. "$SCRIPTNAME" ''
+				SCRIPTNAME="$0"
+				echo -e "  \e[1m$I\e[0m Configure $CAPTIVEPORTALNAME"
+			done
+			SCRIPTNAME="$0"
+			$AUTOSOLVECAPTIVEPORTAL &&
+				echo -e "  \e[1mS\e[0m Don't automatically \e[1ms\e[0molve Captive Portals" ||
+				echo -e '  \e[1mS\e[0m Automatically \e[1ms\e[0molve Captive Portals'
+			echo -e '  \e[1mB\e[0m \e[1mB\e[0mack to main menu'
+			echo
+
+			if read -p 'Captive Portal to configure or option: '; then
+				case "$REPLY" in
+					S|s)
+						$AUTOSOLVECAPTIVEPORTAL &&
+							AUTOSOLVECAPTIVEPORTAL='false' ||
+							AUTOSOLVECAPTIVEPORTAL='true'
+						setConfigValue 'AUTOSOLVECAPTIVEPORTAL' "$AUTOSOLVECAPTIVEPORTAL"
+						storeConfig
+						;;
+					B|b) break ;;
+					*)
+						if echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${CONFIGURABLECAPTIVEPORTALS[$REPLY]}" ]; then
+							echo
+							SCRIPTNAME="$LIBPATH/captiveportal.d/${CONFIGURABLECAPTIVEPORTALS[$REPLY]}"
+							if . "$SCRIPTNAME" 'CONFIGURE'; then
+								storeConfig
+							fi
+							SCRIPTNAME="$0"
+						else
+							echo 'Invalid input'
+						fi
+						;;
+				esac
+			fi
 		done
 		;;
 	'SOLVE')

@@ -10,6 +10,9 @@
 #
 # Rogier van Staveren, January 2019, initial development release
 
+CAPTIVEPORTALNAME='Mikrotik'
+HASCONFIG='false'
+
 case "$1" in
 	'CONFIGURE')
 		# No configuration to be done for this type of Captive Portal

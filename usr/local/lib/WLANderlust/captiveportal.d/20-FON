@@ -10,9 +10,27 @@
 #
 # Rogier van Staveren, January 2019, initial release
 
+CAPTIVEPORTALNAME='Fon'
+
+HASCONFIG='true'
+ISCONFIGURED='false'
+_USERNAME=`getCaptivePortalUsername "$BSSID" "$SSID" '.portal.fon.com' '' ''`
+_PASSWORD=`getCaptivePortalPassword "$BSSID" "$SSID" '.portal.fon.com' '' ''`
+[ ! -z "$_USERNAME" ] && [ ! -z "$_PASSWORD" ] &&
+	ISCONFIGURED='true'
+
 case "$1" in
         'CONFIGURE')
-		#ToDo
+		read -p 'Fon username: ' -e -i "$_USERNAME" '_USERNAME'
+		#ToDo Validate input, username should contain an @
+		readPassword 'Fon password: '
+		[ -z "$PASSWORD" ] &&
+			PASSWORD="$_PASSWORD"
+		if [ ! -z "$_USERNAME" ] && [ ! -z "$PASSWORD" ]; then
+			setCaptivePortalCredentials '' '' '.portal.fon.com' '' '' "$_USERNAME" "$PASSWORD" &&
+				return 0 ||
+				return 1
+		fi
 		return 1
                 ;;
         'SOLVE')
@@ -24,20 +42,15 @@ case "$1" in
 esac
 
 if grep -q '\.portal\.fon\.com/' <<< "$LOCATION"; then
-	USERNAME=`getCaptivePortalUsername "$BSSID" "$SSID" '.portal.fon.com' '' ''`
-	PASSWORD=`getCaptivePortalPassword "$BSSID" "$SSID" '.portal.fon.com' '' ''`
-
-	# Return if no Fon username or password are configured
-	if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
-		CAPTIVEPORTALSTATE="failure"
+	! $ISCONFIGURED &&
 		return 1
-	fi
 else
 	return 1
 fi
 
 # URL Encode the Fon username
-USERNAME=`sed 's|@|%40|' <<< $USERNAME`
+USERNAME=`sed 's|@|%40|' <<< $_USERNAME`
+PASSWORD="$_PASSWORD"
 if [ "$SSID" = 'KPN Fon' ]; then
 	logMessage 'Connected to FON'
 	CAPTIVEPORTALTYPE='Fon'

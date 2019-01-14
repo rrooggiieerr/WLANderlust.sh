@@ -1242,6 +1242,7 @@ WLANderlustMenu()
 {
 	SCANFORNETWORKS='false'
 	while true; do
+		TIMESTAMP=`date +%Y%m%d%H%M%S`
 		getWiFiStatus
 		getNetworkStatus
 		! $VERBOSELOGGING && clear

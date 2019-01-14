@@ -285,6 +285,10 @@ case "$1" in
 					CAPTIVEPORTALSTATE='none'
 					$INTERACTIVE && echo ' None'
 				fi
+
+				if $CAPTIVEPORTALLOGGING; then
+					rm "$CAPTIVEPORTALLOGPATH/CaptivePortal$TIMESTAMP-"*.log
+				fi
 			else
 				# Captive portal present
 				logMessage 'Captive Portal present'

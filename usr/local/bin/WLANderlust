@@ -29,6 +29,7 @@ Usage:
   --stopFirewall
   --restartFirewall
   --switchHostAPchannel
+  --append2WPAsupplicant
   --status
   --verbose
   --debug'
@@ -217,6 +218,7 @@ STOPVPN='false'
 STARTFIREWALL='false'
 STOPFIREWALL='false'
 SWITCHHOSTAPCHANNEL='false'
+APPEND2WPASUPPLICANT='false'
 STATUS='false'
 while [ ! -z "$1" ]; do
 	PARAM=`tr '[:upper:]' '[:lower:]' <<< "$1"`
@@ -235,6 +237,7 @@ while [ ! -z "$1" ]; do
 			--stopfirewall) INTERACTIVE='false'; STOPFIREWALL='true' ;;
 			--restartfirewall) INTERACTIVE='false'; STOPFIREWALL='true'; STARTFIREWALL='true' ;;
 			--switchhostapchannel) INTERACTIVE='false'; SWITCHHOSTAPCHANNEL='true' ;;
+			--append2wpasupplicant) INTERACTIVE='false'; APPEND2WPASUPPLICANT='true' ;;
 			--state|--status) STATUS='true' ;;
 			--verbose) VERBOSELOGGING='true' ;;
 			--debug) DEBUGLOGGING='true' ;;
@@ -836,7 +839,7 @@ reassociateInterface()
 	! $ISROAMING && startDHClient
 }
 
-append2wpa_supplicant()
+append2WPAsupplicant()
 {
 	if [ ! -f "$WPASUPPLICANTCONF" ]; then
 		logError "$WPASUPPLICANTCONF does not exist"
@@ -844,9 +847,24 @@ append2wpa_supplicant()
 	elif [ ! -w "$WPASUPPLICANTCONF" ]; then
 		logError "$WPASUPPLICANTCONF is not writable"
 		return 1
-	elif /bin/grep -q "ssid=\"$1\"" "$WPASUPPLICANTCONF"; then
-		logError "SSID \"$1\" is already configured in wpa_supplicant configuration"
+	elif [ "$WPASTATE" != 'COMPLETED' ]; then
 		return 1
+	elif [ "$KEYMGMT" != 'NONE' ]; then
+		return 1
+	elif /bin/grep -q "ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
+		# SSID is already configured in wpa_supplicant configuration
+		return 0
+	elif [ -z "$EXTERNALIPADDRESS" ] && [ "$SIGNALSTRENGTH" -lt 60 ]; then
+		# Connection is to poor to say anything about the workings of the connection
+		return 1
+	fi
+
+	if ([ "$CAPTIVEPORTALTYPE" = 'none' ] || [ "$CAPTIVEPORTALSTATE" = 'solved' ]) && [ ! -z "$EXTERNALIPADDRESS" ]; then
+		_PRIORITY='50'
+	elif [ "$CAPTIVEPORTALSTATE" = 'present' ]; then
+		_PRIORITY='-50'
+	else
+		_PRIORITY='-200'
 	fi
 
 	logMessage "Appending configuration for SSID \"$1\" to $WPASUPPLICANTCONF"
@@ -854,9 +872,10 @@ append2wpa_supplicant()
 
 # Added on `date` by WLANderlust
 network={
-	ssid="$1"
+	bssid=$BSSID
+	ssid="$SSID"
 	key_mgmt=NONE
-	priority=$2
+	priority=$_PRIORITY
 }
 EOF
 
@@ -1221,6 +1240,7 @@ WLANderlustMenu()
 	SCANFORNETWORKS='false'
 	while true; do
 		TIMESTAMP=`date +%Y%m%d%H%M%S`
+		BODYLOGFILECOUNTER='1'
 		getWiFiStatus
 		getNetworkStatus
 		! $VERBOSELOGGING && clear
@@ -1267,7 +1287,7 @@ WLANderlustMenu()
 					echo -n ' '
 
 				#for FILE in `ls /home/pi/Instabridge/*.dib`; do
-				#       sqlite3 $FILE 'select "'$FILE'", `ssid`, quote(`security.password`), `location.latitude`, `location.longitude` from hotspots where `ssid` like "'"$_SSID"'" COLLATE NOCASE'
+				# sqlite3 $FILE 'select "'$FILE'", `ssid`, quote(`security.password`), `location.latitude`, `location.longitude` from hotspots where `ssid` like "'"$_SSID"'" COLLATE NOCASE'
 				#done
 
 				printf '%3d%% %2d "%s"' $QUALITY $_CHANNEL "$_SSID"
@@ -1319,7 +1339,8 @@ WLANderlustMenu()
 					;;
 				S|s)
 					solveCaptivePortal
-				       ;;
+					append2WPAsupplicant
+					;;
 				D|d)
 					echo
 					if [ "$IPOVERDNSSTATE" = 'stopped' ]; then
@@ -1408,6 +1429,7 @@ else
 			$STARTVPN && startVPN
 			$STARTFIREWALL && startFirewall
 			$SWITCHHOSTAPCHANNEL && switchHostAPchannel
+			$APPEND2WPASUPPLICANT && append2WPAsupplicant
 		else
 			getWiFiStatus
 			getNetworkStatus

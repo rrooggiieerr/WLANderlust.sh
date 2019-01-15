@@ -81,7 +81,7 @@ case "$1" in
 							setState 'VPNBINDIPADDRESS' "$IPADDRESS"
 						fi
 
-						if echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${CONFIGURABLEVPNS[$REPLY]}" ]; then
+						if egrep -q '^[0-9]+$' <<< "$REPLY" && [ ! -z "${CONFIGURABLEVPNS[$REPLY]}" ]; then
 							echo
 							SCRIPTNAME="$LIBPATH/vpn.d/${CONFIGURABLEVPNS[$REPLY]}"
 							if . "$SCRIPTNAME" 'CONFIGURE'; then
@@ -213,13 +213,8 @@ case "$1" in
 		$DEBUGLOGGING && logMessage "$VPNINTERFACE = $DEFAULTROUTEINTERFACE"
 		if [ "$VPNINTERFACE" = "$DEFAULTROUTEINTERFACE" ]; then
 			logMessage "Route trafic over $INTERFACE"
-			echo "GATEWAY=$GATEWAY"
-			GATEWAY=`route -n | sed -n "s|^$VPNSERVERIPADDRESS *\([0-9.]*\) .* $INTERFACE|\1|p"`
-			GATEWAY=`route -n | sed -n "s|^[0-9.]* *\([0-9.]*\) .* wlan1|\1|p" | grep -v '0\.0\.0\.0'`
 			if [ ! -z "$GATEWAY" ]; then
-				echo ip route del "$VPNSERVERIPADDRESS" via "$GATEWAY"
 				ip route del "$VPNSERVERIPADDRESS" via "$GATEWAY"
-				echo ip route replace default via "$GATEWAY"
 				ip route replace default via "$GATEWAY"
 			fi
 			setState 'DEFAULTROUTEINTERFACE' "$INTERFACE"

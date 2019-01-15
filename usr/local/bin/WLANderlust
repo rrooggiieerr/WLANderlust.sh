@@ -194,7 +194,7 @@ DEFAULTGPSFILE="$LOGPATH/WLANderlust.gps"
 
 [ -z "$COOKIEJAR" ] && COOKIEJAR=`getConfigValue 'COOKIEJAR' "$DEFAULTCOOKIEJAR"`
 [ -z "$LOGFILE" ] && LOGFILE=`getConfigValue 'LOGFILE' "$DEFAULTLOGFILE"`
-([ ! -w "$LOGFILE" ] || ([ ! -f "$LOGFILE" ] && [ ! -w `dirname "$LOGFILE"` ])) && LOGFILE='/dev/stdout'
+[ ! -w "$LOGFILE" ] && [ ! -w `dirname "$LOGFILE"` ] && LOGFILE='/dev/stdout'
 [ -z "$GPSFILE" ] && GPSFILE=`getConfigValue 'GPSFILE' "$DEFAULTGPSFILE"`
 ([ ! -w "$GPSFILE" ] || ([ ! -f "$GPSFILE" ] && [ ! -w `dirname "$GPSFILE"` ])) && GPSFILE='/dev/null'
 [ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`

@@ -295,14 +295,21 @@ case "$1" in
 					return 1
 				else
 					! $INTERACTIVE && $VERBOSELOGGING && logMessage 'Captive portal present'
+					_OLDCAPTIVEPORTTYPE="$CAPTIVEPORTTYPE"
+					CAPTIVEPORTTYPE='unknown'
 					CAPTIVEPORTALSTATE='present'
 
 					for SCRIPTNAME in $(run-parts --list "$LIBPATH/captiveportal.d"); do
 						. "$SCRIPTNAME" SOLVE
+						[ "$CAPTIVEPORTTYPE" != 'unknown' ] &&
+							break
 						[ "$CAPTIVEPORTALSTATE" = 'solved' ] &&
 							break
 					done
 					SCRIPTNAME="$0"
+
+					[ "$CAPTIVEPORTTYPE" = 'unknown' ] &&
+						CAPTIVEPORTTYPE="$_OLDCAPTIVEPORTTYPE"
 
 					setState 'CAPTIVEPORTALTYPE' "$CAPTIVEPORTALTYPE"
 					setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"

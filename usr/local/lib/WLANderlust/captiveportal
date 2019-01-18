@@ -259,8 +259,8 @@ case "$1" in
 				CAPTIVEPORTALTYPE=`getState 'CAPTIVEPORTALTYPE'`
 				CAPTIVEPORTALSTATE=`getState 'CAPTIVEPORTALSTATE'`
 			else
-				CAPTIVEPORTALTYPE='unknown'
-				CAPTIVEPORTALSTATE='unknown'
+				setState 'CAPTIVEPORTALTYPE' 'unknown'
+				setState 'CAPTIVEPORTALSTATE' 'unknown'
 			fi
 
 			if [ "$IPOVERDNSSTATE" != 'stopped' ] || [ "$VPNSTATE" != 'stopped' ]; then
@@ -288,8 +288,7 @@ case "$1" in
 				if [ -z "$BODY" ]; then
 					# Failure
 					logError 'Empty body when retreiving Captive Portal'
-					CAPTIVEPORTALSTATE='failure'
-					setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"
+					setState 'CAPTIVEPORTALSTATE' 'failure'
 					storeState
 
 					return 1
@@ -337,8 +336,8 @@ case "$1" in
 				CAPTIVEPORTALTYPE=`getState 'CAPTIVEPORTALTYPE'`
 				CAPTIVEPORTALSTATE=`getState 'CAPTIVEPORTALSTATE'`
 			else
-				CAPTIVEPORTALTYPE='unknown'
-				CAPTIVEPORTALSTATE='unknown'
+				setState 'CAPTIVEPORTALTYPE' 'unknown'
+				setState 'CAPTIVEPORTALSTATE' 'unknown'
 			fi
 
 			if [ "$IPOVERDNSSTATE" != 'stopped' ] || [ "$VPNSTATE" != 'stopped' ]; then
@@ -357,36 +356,44 @@ case "$1" in
 
 			$INTERACTIVE && echo -n 'Detecting Captive Portal'
 
-			CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
+			_CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
 			$INTERACTIVE && echo -n '.'
-			if ! host -t A -W $TIMEOUT "$CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+			if ! host -t A -W $TIMEOUT "$_CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
 				$INTERACTIVE && echo -n ' '
-				logError "Captive portal detection hostname $CAPTIVEPORTALDETECTIONHOSTNAME could not be resolved"
+				logError "Captive portal detection hostname $_CAPTIVEPORTALDETECTIONHOSTNAME could not be resolved"
 				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
-					CAPTIVEPORTALSTATE='failure'
+					setState 'CAPTIVEPORTALSTATE' 'failure'
 				fi
-			elif $INTERACTIVE && echo -n '.'; ! curlGet "$CAPTIVEPORTALDETECTIONURL"; then
+				storeState
+				return
+			fi
+
+			rm -f "$COOKIEJAR"
+			BODYLOGFILECOUNTER='1'
+			#if $INTERACTIVE && echo -n '.'; ! BODY=`curl --interface "$INTERFACE" -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL"`; then
+			#	logError "Failed to retrieve '$CAPTIVEPORTALDETECTIONURL'"
+			if $INTERACTIVE && echo -n '.'; ! curlGet "$CAPTIVEPORTALDETECTIONURL"; then
 				# An error message is already logged in the curlGet function
 				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
-					CAPTIVEPORTALSTATE='failure'
+					setState 'CAPTIVEPORTALSTATE' 'failure'
 				fi
 			elif $INTERACTIVE && echo -n '.'; [ -z "$BODY" ]; then
 				# Failure
 				$INTERACTIVE && echo -n ' '
 				logError "Empty body when detecting captive portal"
 				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
-					CAPTIVEPORTALSTATE='failure'
+					setState 'CAPTIVEPORTALSTATE' 'failure'
 				fi
 			elif $INTERACTIVE && echo -n '.'; grep -q "$CAPTIVEPORTALDETECTIONRESPONSE" <<< "$BODY"; then
 				# No Captive portal
 				! $INTERACTIVE && $VERBOSELOGGING && logMessage "No captive portal detected"
 				if [ "$PREVIOUSBSSID" = "$BSSID" ] && [ ! -z "$CAPTIVEPORTALTYPE" ] &&
 					[ "$CAPTIVEPORTALTYPE" != 'none' ] && [ "$CAPTIVEPORTALTYPE" != 'unknown' ]; then
-					CAPTIVEPORTALSTATE='solved'
+					setState 'CAPTIVEPORTALSTATE' 'solved'
 					$INTERACTIVE && echo " $CAPTIVEPORTALTYPE, Solved"
 				else
-					CAPTIVEPORTALTYPE='none'
-					CAPTIVEPORTALSTATE='none'
+					setState 'CAPTIVEPORTALTYPE' 'none'
+					setState 'CAPTIVEPORTALSTATE' 'none'
 					$INTERACTIVE && echo ' None'
 				fi
 
@@ -397,16 +404,15 @@ case "$1" in
 				# Captive portal present
 				logMessage 'Captive Portal present'
 
+				#LOCATION="$CAPTIVEPORTALDETECTIONURL"
 				getLocationHeader "$BODY" && [ ! -z "$LOCATION" ] &&
 					! $INTERACTIVE && $VERBOSELOGGING && logMessage "Captive Portal location: \"$LOCATION\""
 
 				if $INTERACTIVE && echo -n '.'; [ "$PREVIOUSBSSID" != "$BSSID" ] || [ -z "$CAPTIVEPORTALTYPE" ] ||
 					[ "$CAPTIVEPORTALTYPE" = 'none' ]; then
-					CAPTIVEPORTALTYPE='unknown'
+					setState 'CAPTIVEPORTALTYPE' 'unknown'
 				fi
-				CAPTIVEPORTALSTATE='present'
-				setState 'CAPTIVEPORTALTYPE' "$CAPTIVEPORTALTYPE"
-				setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"
+				setState 'CAPTIVEPORTALSTATE' 'present'
 				storeState
 				return 0
 			fi
@@ -414,12 +420,10 @@ case "$1" in
 			logError "Interface $INTERFACE not connected"
 			LOCATION=''
 			BODY=''
-			CAPTIVEPORTALTYPE='unknown'
-			CAPTIVEPORTALSTATE='unknown'
+			setState 'CAPTIVEPORTALTYPE' 'unknown'
+			setState 'CAPTIVEPORTALSTATE' 'unknown'
 		fi
 
-		setState 'CAPTIVEPORTALTYPE' "$CAPTIVEPORTALTYPE"
-		setState 'CAPTIVEPORTALSTATE' "$CAPTIVEPORTALSTATE"
 		storeState
 		return 1
 		;;

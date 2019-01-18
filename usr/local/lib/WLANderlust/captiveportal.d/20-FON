@@ -41,116 +41,62 @@ case "$1" in
 		;;
 esac
 
-if grep -q '\.portal\.fon\.com/' <<< "$LOCATION"; then
-	! $ISCONFIGURED &&
-		return 1
-else
+if ! grep -q '\.portal\.fon\.com/' <<< "$LOCATION"; then
+	# Not a Fon Captive Portal
+	return 1
+elif ! $ISCONFIGURED; then
+	# No Fon credentials configured
 	return 1
 fi
 
 # URL Encode the Fon username
 USERNAME=`sed 's|@|%40|' <<< $_USERNAME`
 PASSWORD="$_PASSWORD"
-if [ "$SSID" = 'KPN Fon' ]; then
-	logMessage 'Connected to FON'
+FORMACTION=`sed -n 's|^.*<form [^>]*\bid="[^"]*login[^"]*"[^>]* action="\([^"]*\)"[^>]*>.*$|\1|Ip' <<< "$BODY"`
+$DEBUGLOGGING && logMessage "Form action: \"$FORMACTION\""
+if grep -q '^https://ote\.portal\.fon\.com/' <<< "$LOCATION"; then
+	logMessage 'Connected to Cosmote Fon'
 	CAPTIVEPORTALTYPE='Fon'
 
-	FORMACTION=`sed -n 's|^.*<form id="login"[^>]* action="\([^"]*\)"[^>]*>.*$|\1|Ip' <<< "$BODY"`
-	$DEBUGLOGGING && logMessage "Form action: \"$FORMACTION\""
+	#FORMACTION=`sed -n 's|^.*<form id="loginForm"[^>]* action="\([^"]*\)"[^>]*>.*$|\1|Ip' <<< "$BODY"`
+	#$DEBUGLOGGING && logMessage "Form action: \"$FORMACTION\""
+	FORMARGUMENTS="chooseUser=passusers&USERNAME=$USERNAME&PASSWORD=$PASSWORD&remember=on"
+elif [ "$SSID" = 'KPN Fon' ]; then
+	logMessage 'Connected to KPN Fon'
+	CAPTIVEPORTALTYPE='Fon'
+	FORMARGUMENTS="UserName=$USERNAME&Password=$PASSWORD&_rememberMe=on"
+else
+	logMessage 'Connected to Fon'
+	CAPTIVEPORTALTYPE='Fon'
+	# No Form arguments available
+	CAPTIVEPORTALSTATE="failure"
+	return 1
+fi
 
-	if [ ! -z "FORMACTION" ] &&  curlPost "$FORMACTION" "UserName=$USERNAME&Password=$PASSWORD&_rememberMe=on"; then
-		getLocationHeader "$BODY"
-		if [ ! -z "$LOCATION" ]; then
-			$DEBUGLOGGING && logMessage "Redirect location: \"$LOCATION\""
-			getBody "$LOCATION" true
-		fi
+if [ -z "FORMACTION" ]; then
+	logError 'No form action'
+	setState 'CAPTIVEPORTALSTATE' 'failure'
+	return 1
+elif curlPost "$FORMACTION" "$FORMARGUMENTS"; then
+	getLocationHeader "$BODY"
+	if [ ! -z "$LOCATION" ]; then
+		$DEBUGLOGGING && logMessage "Redirect location: \"$LOCATION\""
+		getBody "$LOCATION" true
+	fi
 
-		#ToDo validate the right grep
-		if grep -q '<title>KPN | Fon - Success</title>' <<< "$BODY"; then
-			# Ok, we were able to authenticate
-			logMessage 'Captive portal succesfully authenticated'
-			CAPTIVEPORTALSTATE='solved'
-		else
-			logError 'Captive portal still present'
-			CAPTIVEPORTALSTATE="failure"
-		fi
+	if grep -q '<title>[^>]* | Fon - Success</title>' <<< "$BODY"; then
+		# Ok, we were able to authenticate
+		logMessage 'Captive portal succesfully authenticated'
+		setState 'CAPTIVEPORTALSTATE' 'solved'
+		return 0
 	else
-		logError "Failed to retrieve \"$LOCATION\""
-		CAPTIVEPORTALSTATE='failure'
+		logError 'Captive portal still present'
+		setState 'CAPTIVEPORTALSTATE' 'failure'
+		return 1
 	fi
-elif [ "$SSID" = 'Telekom_FON' ] || [ "$SSID" = 'BT FON' ]; then
-	logMessage 'Connected to FON'
-	CAPTIVEPORTALTYPE='Fon'
-
-	#ToDo Script to auto login
-	logError 'Some smart script not yet implemented'
-
-	CAPTIVEPORTALSTATE="failure"
-
-	return 1
-elif [ "$SSID" = 'OTE WiFi Fon' ] || grep -q 'https://ote\.portal\.fon\.com/' <<< "$LOCATION"; then
-	logMessage 'Connected to FON'
-	CAPTIVEPORTALTYPE='Fon'
-
-	if [ ! -z "$USERNAME" ] && [ ! -z "$PASSWORD" ]; then
-		FORMACTION=`sed -n 's|^.*<form id="loginForm"[^>]* action="\([^"]*\)"[^>]*>.*$|\1|Ip' <<< "$BODY"`
-		$DEBUGLOGGING && logMessage "Form action: \"$FORMACTION\""
-		FORMARGUMENTS="chooseUser=passusers&USERNAME=$USERNAME&PASSWORD=$PASSWORD&remember=on"
-
-		if [ ! -z "FORMACTION" ] && curlPost "$FORMACTION" "$FORMARGUMENTS"; then
-			getLocationHeader "$BODY"
-			if [ ! -z "$LOCATION" ]; then
-				$DEBUGLOGGING && logMessage "Redirect location: \"$LOCATION\""
-				getBody "$LOCATION" true
-			fi
-
-			if grep -q '<title>COSMOTE | Fon - Success</title>' <<< "$BODY"; then
-				# Ok, we were able to authenticate
-				logMessage 'Captive portal succesfully authenticated'
-				CAPTIVEPORTALSTATE="solved"
-				return 0
-			else
-				logError 'Captive portal still present'
-				CAPTIVEPORTALSTATE="failure"
-				return 1
-			fi
-		else
-			logError "Failed to retrieve \"$LOCATION\""
-			CAPTIVEPORTALSTATE='failure'
-			return 1
-		fi
-	#else
-	#	# Go for the free 15 minutes
-	#	# Does not work yet, work in progress
-	#	logMessage "No FON credentials available, we'll s go for the 15 minutes free WiFi instead"
-	#	ACTION=`sed -n 's|^.*<a href="\([^"]*\)"[^>]*>Free WiFi 15 min. trial</a>.*$|\1|p' <<< "$BODY"`
-	#	$DEBUGLOGGING && logMessage "15 minutes free WiFi URL: '$ACTION'"
-	#	if curlGet "$ACTION"; then
-	#		getLocationHeader "$BODY"
-	#		if [ ! -z "$LOCATION" ]; then
-	#			$DEBUGLOGGING && logMessage "Redirect location: \"$LOCATION\""
-	#			getBody "$LOCATION" true
-	#		fi
-	#	fi
-	#
-	#	CAPTIVEPORTALTYPE='Fon'
-	#	CAPTIVEPORTALSTATE='failure'
-	#
-	#	return 1
-	fi
-
-	CAPTIVEPORTALSTATE="failure"
-
-	return 1
-elif grep -q '\.portal\.fon\.com/' <<< "$LOCATION"; then
-	logMessage 'Seems to be connected to FON'
-	CAPTIVEPORTALTYPE='Fon'
-
-	#ToDo Script to auto login
-	logError 'Some smart script not yet implemented'
-
-	CAPTIVEPORTALSTATE="failure"
-
+else
+	logError "Failed to retrieve \"$LOCATION\""
+	setState 'CAPTIVEPORTALSTATE' 'failure'
 	return 1
 fi
 

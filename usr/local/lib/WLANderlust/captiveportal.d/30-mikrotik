@@ -1,3 +1,4 @@
+#!/bin/bash
 # WLANderlust
 #
 # This script handles Captive Portal login for Mikrotik routers
@@ -26,57 +27,86 @@ case "$1" in
 		;;
 esac
 
-if echo "$BODY" | tr -d '\n\r' | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; then
+if tr -d '\n\r' <<< "$BODY" | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; then
 	logMessage 'Mikrotik Captive Portal'
 	CAPTIVEPORTALTYPE='Mikrotik'
 
 	# Remove comments
-	CLEANBODY=`echo "$BODY" | tr -d '\n\r' | sed 's|\(-->\)|\1\n|g' | sed 's|<!--.*-->||'`
-	FORM=`echo "$CLEANBODY" | sed 's|\(</form>\)|\1\n|Ig' | sed -n 's|^.*\(<form name="login"[^>]*>.*</form>\)$|\1|Ip'`
+	CLEANBODY=`tr -d '\n\r' <<< "$BODY" | sed 's|\(-->\)|\1\n|g' | sed 's|<!--.*-->||'`
+	FORM=`sed 's|\(</form>\)|\1\n|Ig' <<< "$CLEANBODY" | sed -n "s|^.*\(<form [^>]*\bname=[\"']login[\"'][^>]*>.*</form>\)$|\1|Ip"`
 
-	USERNAME=`echo "$FORM" | sed -n 's|^.*<input name="username"[^>]*value=["'\'']\([^"'\'']*\)["'\''][^>]*>.*$|\1|p'`
-	if [ -z "$USERNAME" ]; then
-		getCaptivePortalUsername "$BSSID" "$SSID" "$LOCATION"
+	if [ -z "$FORM" ]; then
+		logError "No login form found"
+		# Maybe we can find an <a href=
+		AHREF=`sed -n "s|.*<a [^>]*href=['\"]\([^\"]*/login\?[^\"]*\)\".*|\1|p" <<< "$CLEANBODY" | head -n 1`
+		$DEBUGLOGGING && logMessage "AHREF=$AHREF"
+		[ -z "$AHREF" ] &&
+			CAPTIVEPORTALSTATE='failure' &&
+			return 1
+		AHREF=`sed 's|&amp;|\&|g' <<< "$AHREF"`
+		$DEBUGLOGGING && logMessage "AHREF=$AHREF"
+		curlGet "$AHREF"
+		return
 	fi
 
-	PASSWORD=`echo "$FORM" | sed -n 's|^.*<input name="password"[^>]*value=["'\'']\([^"'\'']*\)["'\''][^>]*>.*$|\1|p'`
+	USERNAME=`sed -n "s|^.*<input [^>]*\bname=[\"']username[\"'] [^>]*\bvalue=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|p" <<< "$FORM"`
+	if [ -z "$USERNAME" ]; then
+		USERNAME=`getCaptivePortalUsername "$BSSID" "$SSID" "$LOCATION"`
+	fi
+
+	PASSWORD=`sed -n "s|^.*<input [^>]*\bname=[\"']password[\"'] [^>]*\bvalue=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|p" <<< "$FORM"`
 	if [ -z "$PASSWORD" ]; then
-		 getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"
+		 PASSWORD=`getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"`
 	fi
 
 	if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
 		logError "No login credentials for \"$BSSID\" \"$SSID\" \"$LOCATION\""
 		CAPTIVEPORTALSTATE='failure'
-		return
+		return 1
 	fi
 
-	#CHAPID=`echo "$BODY" | sed -n "s|^.*hexMD5('\(.*\)' +.*).*$|\1|p"`
-	#CHAPCHALLENGE=`echo "$BODY" | sed -n "s|^.*hexMD5(.*+ '\(.*\)').*$|\1|p"`
-	#ToDo hedMD5 password
-	PASSWORD="$CHAPID$PASSWORD$CHAPCHALLENGE"
+	# Values are in octal notation
+	CHAPID=`sed -n "s|^.*hexMD5([\"']\([\\0-9]*\)[\"'] \+.*).*$|\1|p" <<< "$BODY"`
+	$DEBUGLOGGING && logMessage "CHAPID=$CHAPID"
+	CHAPCHALLENGE=`sed -n "s|^.*hexMD5(.*\+ [\"']\([\\0-9]*\)[\"']).*$|\1|p" <<< "$BODY"`
+	$DEBUGLOGGING && logMessage "CHAPCHALLENGE=$CHAPCHALLENGE"
+	PASSWORD=`printf '%b%s%b' "$CHAPID" "$PASSWORD" "$CHAPCHALLENGE"`
+	$DEBUGLOGGING && logMessage "PASSWORD=$PASSWORD"
+	# hexMD5 password
+	PASSWORD=`echo -n "$PASSWORD" | md5sum | cut -d ' ' -f 1`
+	$DEBUGLOGGING && logMessage "PASSWORD=$PASSWORD"
 
-	FORM=`echo "$CLEANBODY" | sed 's|\(</form>\)|\1\n|Ig' | sed -n 's|^.*\(<form name="sendin"[^>]*>.*</form>\)$|\1|Ip'`
-	FORMACTION=`echo "$FORM" | sed -n 's|^.*<form [^>]*action=["'\'']\([^"'\'']*\)["'\''][^>]*>.*$|\1|Ip'`
+	FORM=`sed 's|\(</form>\)|\1\n|Ig' <<< "$CLEANBODY" | sed -n "s|^.*\(<form [^>]*\bname=[\"']sendin[\"'][^>]*>.*</form>\)$|\1|Ip"`
+	[ -z "$FORM" ] &&
+		logError 'No form' &&
+		return 1
+
+	FORMACTION=`sed -n "s|^.*<form [^>]*\baction=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|Ip" <<< "$FORM"`
+	$DEBUGLOGGING && logMessage "FORMACTION=$FORMACTION"
+	[ -z "$FORMACTION" ] &&
+		logError 'No form action'
 	FORMACTION=`expandLocation "$FORMACTION" "$LOCATION"`
+	$DEBUGLOGGING && logMessage "FORMACTION=$FORMACTION"
 
 	# Loop trough the inputs and build the post data
-	INPUTS=`echo "$FORM" | sed 's|>|&\n|g' | sed -n 's|.*\(<input [^>]*>\)$|\1|Ip'`
+	INPUTS=`sed 's|>|&\n|g' <<< "$FORM" | sed -n 's|.*\(<input [^>]*>\)$|\1|Ip'`
 	OIFS="$IFS"
 	IFS='
 '
 	for INPUT in $INPUTS; do
-		INPUTNAME=`echo "$INPUT" | sed -n 's|.* name=["'\'']\([^"'\'']*\)["'\''].*|\1|Ip'`
+		INPUTNAME=`sed -n "s|.* name=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
 		case "$INPUTNAME" in
 			username) INPUTVALUE="$USERNAME" ;;
 			password) INPUTVALUE="$PASSWORD" ;;
-			*) INPUTVALUE=`echo "$INPUT" | sed -n 's|.* value=["'\'']\([^"'\'']*\)["'\''].*|\1|Ip'` ;;
+			*) INPUTVALUE=`sed -n "s|.* value=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"` ;;
 		esac
-		[ ! -z "$POSTDATA" ] && POSTDATA="$POSTDATA&"
-		POSTDATA="$POSTDATA$INPUTNAME=$INPUTVALUE"
+		[ ! -z "$POSTDATA" ] && POSTDATA+="&"
+		POSTDATA+="$INPUTNAME=$INPUTVALUE"
 	done
 	IFS="$OIFS"
-	echo "$POSTDATA"
+	logMessage "POSTDATA: $POSTDATA"
 
+	curlPost "$FORMACTION" "$POSTDATA"
 	#if curlPost "$FORMACTION" "$POSTDATA"; then
 	#	CAPTIVEPORTALSTATE='failure'
 	#else

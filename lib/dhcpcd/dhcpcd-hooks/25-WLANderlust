@@ -33,13 +33,13 @@ case $reason in
 		$AUTOSOLVECAPTIVEPORTAL && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --solve"
 		$AUTOSTARTIPOVERDNS && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --startIPoverDNS"
 		$AUTOSTARTVPN && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --startVPN"
-		WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --restartFirewall --append2WPAsupplicant --status"
+		WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --restartFirewall --reassociate --append2WPAsupplicant --switchHostAPchannel --status"
 		eval "$WLANDERLUSTCOMMAND"
 		;;
 	RENEW)
 		$AUTOSOLVECAPTIVEPORTAL &&
-			/usr/local/bin/WLANderlust -i "$interface" --solve --restartFirewall --status ||
-			/usr/local/bin/WLANderlust -i "$interface" --status
+			/usr/local/bin/WLANderlust -i "$interface" --solve --restartFirewall --reassociate  --status ||
+			/usr/local/bin/WLANderlust -i "$interface" --reassociate --status
 		;;
 	RELEASE|EXPIRE|STOPPED)
 		/usr/local/bin/WLANderlust -i "$interface" --stopFirewall --stopVPN --stopIPoverDNS --status

@@ -28,6 +28,7 @@ Usage:
   --startFirewall
   --stopFirewall
   --restartFirewall
+  --reassociate
   --switchHostAPchannel
   --append2WPAsupplicant
   --status
@@ -131,9 +132,9 @@ getConfigValue()
 	readConfig
 
 	# Lookup key value in the configuration
-	VALUE=`sed -n "s|^$1=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}$|\1|p" <<< "$CONFIG"`
+	VALUE=`sed -n "s|^$1=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}$|\1|p" <<< "$CONFIG" | tail -n 1`
 	# If value is empty lookup the key value in the default configuration
-	[ -z "$VALUE" ] && VALUE=`sed -n "s|^$1=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}$|\1|p" <<< "$DEFAULTCONFIG"`
+	[ -z "$VALUE" ] && VALUE=`sed -n "s|^$1=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}$|\1|p" <<< "$DEFAULTCONFIG" | tail -n 1`
 	# If value is empty use the default value
 	[ -z "$VALUE" ] && VALUE="$2"
 
@@ -217,6 +218,7 @@ STARTVPN='false'
 STOPVPN='false'
 STARTFIREWALL='false'
 STOPFIREWALL='false'
+REASSOCIATE='false'
 SWITCHHOSTAPCHANNEL='false'
 APPEND2WPASUPPLICANT='false'
 STATUS='false'
@@ -226,7 +228,7 @@ while [ ! -z "$1" ]; do
 		case $PARAM in
 			-h|--help) usage; exit ;;
 			-i|--interface) INTERFACE="$2"; shift ;;
-			-s|--solve) SOLVE='true' ;;
+			-s|--solve) INTERACTIVE='false'; SOLVE='true' ;;
 			--startipoverdns|--startipoverdnstunneling) INTERACTIVE='false'; STARTIPOVERDNS='true' ;;
 			--stopipoverdns|--stopIPoverdnstunneling) INTERACTIVE='false'; STOPIPOVERDNS='true' ;;
 			--force) FORCE='true' ;;
@@ -236,6 +238,7 @@ while [ ! -z "$1" ]; do
 			--startfirewall) INTERACTIVE='false'; STARTFIREWALL='true' ;;
 			--stopfirewall) INTERACTIVE='false'; STOPFIREWALL='true' ;;
 			--restartfirewall) INTERACTIVE='false'; STOPFIREWALL='true'; STARTFIREWALL='true' ;;
+			--reassociate) INTERACTIVE='false'; REASSOCIATE='true' ;;
 			--switchhostapchannel) INTERACTIVE='false'; SWITCHHOSTAPCHANNEL='true' ;;
 			--append2wpasupplicant) INTERACTIVE='false'; APPEND2WPASUPPLICANT='true' ;;
 			--state|--status) STATUS='true' ;;
@@ -365,7 +368,7 @@ getState()
 	readState
 
 	# Lookup key value in the configuration
-	sed -n "s|^$1=['\"]\?\([^'\"]*\)['\"]\?$|\1|p" <<< "$STATE"
+	sed -n "s|^$1=['\"]\?\([^'\"]*\)['\"]\?$|\1|p" <<< "$STATE" | tail -n 1
 }
 
 # $1 key
@@ -376,20 +379,20 @@ setState()
 
 	# Check if state key is already set
 	if [ -z "$STATE" ]; then
-		STATE="$1='$2'"
+		STATE="$1='${@:2}'"
 	elif grep -q "^$1=" <<< "$STATE"; then
 		# If configuration key is set, update value
 		# Escape for sed special characters
 		_KEY=`sed -e 's/[]\/$*.^[]/\\\&/g' <<< "$1"`
-		_VALUE=`sed -e 's/[\/&]/\\\&/g' <<< "$2"`
+		_VALUE=`sed -e 's/[\/&]/\\\&/g' <<< "${@:2}"`
 		STATE=`sed "s/^\($_KEY\)=.*$/\1='$_VALUE'/" <<< "$STATE"`
 	else
 		# If configuration key is not set, add new key with value
 		STATE+="
-$1='$2'"
+$1='${@:2}'"
 	fi
 	#ToDo Probably need to do some escapeing here too
-	eval "$1='$2'"
+	eval "$1='${@:2}'"
 }
 
 storeState()
@@ -399,8 +402,6 @@ storeState()
 		return
 
 	if [ ! -f "$STATEFILE" ]; then
-		$DEBUGLOGGING && logMessage 'State changed' &&
-			echo "$STATE"
 		touch "$STATEFILE" &&
 			echo "$STATE" > "$STATEFILE" ||
 			logError "Can't write to status file"
@@ -410,14 +411,10 @@ storeState()
 		NEWMD5=`md5sum <<< "$STATE" | awk '{ print $1 }'`
 		if [ "$OLDMD5" != "$NEWMD5" ]; then
 			# The MD5 sum differences, we're dealing with a new state, update the state
-			$DEBUGLOGGING && logMessage 'State changed' &&
-				diff "$STATEFILE" - <<< "$STATE"
 			# Store new state
 			touch "$STATEFILE" &&
 				echo "$STATE" > "$STATEFILE" ||
 				logError "Can't write to status file"
-		else
-			$DEBUGLOGGING && logMessage 'State not changed'
 		fi
 	fi
 }
@@ -493,7 +490,8 @@ curlGet()
 	# Create Cookie Jar if not exists
 	#[ ! -f "$COOKIEJAR" ] && touch "$COOKIEJAR"
 
-	CURLARGUMENTS=(--raw -4)
+	#CURLARGUMENTS=(--raw -4)
+	CURLARGUMENTS=(-4)
 	[ ! -z "$INTERFACE" ] && CURLARGUMENTS+=(--interface "$INTERFACE")
 	[ ! -z "$TIMEOUT" ] && CURLARGUMENTS+=(-m "$TIMEOUT")
 	[ -r "$COOKIEJAR" ] && CURLARGUMENTS+=(--cookie "$COOKIEJAR")
@@ -535,7 +533,8 @@ curlPost()
 	# Create Cookie Jar if not exists
 	#[ ! -f "$COOKIEJAR" ] && touch "$COOKIEJAR"
 
-	CURLARGUMENTS=(--raw -4)
+	#CURLARGUMENTS=(--raw -4)
+	CURLARGUMENTS=(-4)
 	[ ! -z "$INTERFACE" ] && CURLARGUMENTS+=(--interface "$INTERFACE")
 	[ ! -z "$TIMEOUT" ] && CURLARGUMENTS+=(-m "$TIMEOUT")
 	[ -r "$COOKIEJAR" ] && CURLARGUMENTS+=(--cookie "$COOKIEJAR")
@@ -753,9 +752,9 @@ showNetworkStatus()
 {
 	if ! $INTERFACEISUP; then
 		logError "Interface $INTERFACE is down"
-	elif ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
+	elif $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
 		# Print some details
-		if $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+		if ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
 			$ISWIFIINTERFACE &&
 				MESSAGE='Using WiFi' ||
 				MESSAGE='Using non-WiFi'
@@ -794,17 +793,16 @@ showNetworkStatus()
 			else
 				logMessage 'VPN error'
 			fi
-
+		else
+			logError "Interface $INTERFACE is not connected"
 		fi
-	else
-		logError "Interface $INTERFACE is not connected"
-	fi
 
-	# Host Access Pont
-	if [ "$HOSTAPSTATE" = 'started' ]; then
-		MESSAGE="Host Access Point \"$HOSTAPSSID\" ($HOSTAPBSSID) is active using interface $HOSTAPINTERFACE, channel: $HOSTAPCHANNEL, $HOSTAPTXPOWER dBm"
-		MESSAGE+=", IP address: $HOSTAPIPADDRESS, netmask: $HOSTAPNETMASK"
-		logMessage "$MESSAGE"
+		# Host Access Pont
+		if [ "$HOSTAPSTATE" = 'started' ]; then
+			MESSAGE="Host Access Point \"$HOSTAPSSID\" ($HOSTAPBSSID) is active using interface $HOSTAPINTERFACE, channel: $HOSTAPCHANNEL, $HOSTAPTXPOWER dBm"
+			MESSAGE+=", IP address: $HOSTAPIPADDRESS, netmask: $HOSTAPNETMASK"
+			logMessage "$MESSAGE"
+		fi
 	fi
 }
 
@@ -833,7 +831,14 @@ reassociateInterface()
 {
 	! $ISWIFIINTERFACE &&
 		return 1
+	[ "$WPASTATE" != 'COMPLETED' ] &&
+		return 1
+	[ -n "$EXTERNALIPADDRESS" ] &&
+		return 1
+	[ "$PREVIOUSBSSID" = "$BSSID" ] && [ -n "$IPADDRESS" ] &&
+		return 1
 
+	logMessage 'Reassociating...'
 	! $ISROAMING && stopDHClient
 	wpa_cli -i "$INTERFACE" reassociate > /dev/null 2>&1
 	! $ISROAMING && startDHClient
@@ -851,7 +856,10 @@ append2WPAsupplicant()
 		return 1
 	elif [ "$KEYMGMT" != 'NONE' ]; then
 		return 1
-	elif /bin/grep -q "ssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
+	elif /bin/grep -q "$BSSID" "$WPASUPPLICANTCONF"; then
+		# BSSID is already mentioned in wpa_supplicant configuration
+		return 0
+	elif /bin/grep -q "^[^#]\s*\bssid=\"$SSID\"" "$WPASUPPLICANTCONF"; then
 		# SSID is already configured in wpa_supplicant configuration
 		return 0
 	elif [ -z "$EXTERNALIPADDRESS" ] && [ "$SIGNALSTRENGTH" -lt 60 ]; then
@@ -867,7 +875,7 @@ append2WPAsupplicant()
 		_PRIORITY='-200'
 	fi
 
-	logMessage "Appending configuration for SSID \"$1\" to $WPASUPPLICANTCONF"
+	logMessage "Appending configuration for SSID \"$SSID\" to $WPASUPPLICANTCONF"
 	cat << EOF >> "$WPASUPPLICANTCONF"
 
 # Added on `date` by WLANderlust
@@ -1299,7 +1307,7 @@ WLANderlustMenu()
 			echo -e '  \x1B[1mM\x1B[0m \x1B[1mM\x1B[0manual'
 
 		$SCANFORNETWORKS &&
-			echo -e '  \x1B[1mW\x1B[0m Stop scanning W\x1B[0miFi for networks' ||
+			echo -e '  \x1B[1mW\x1B[0m Stop scanning for W\x1B[0miFi networks' ||
 			echo -e '  \x1B[1mW\x1B[0m Scan for \x1B[1mW\x1B[0miFi networks'
 		$SCANFORNETWORKS &&
 			[ "$WPASTATE" = 'COMPLETED' ] &&
@@ -1425,6 +1433,7 @@ else
 			showWiFiStatus
 			isCaptivePortalPresent
 			$SOLVE && solveCaptivePortal
+			$REASSOCIATE && reassociateInterface
 			$STARTIPOVERDNS && startIPoverDNStunneling
 			$STARTVPN && startVPN
 			$STARTFIREWALL && startFirewall

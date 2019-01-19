@@ -651,7 +651,7 @@ ToDo
 			chown -R wlanderlust:wlanderlust ~wlanderlust/.ssh
 		fi
 
-		if ! grep -x 'WLANderlust' ~wlanderlust/.profile; then
+		if ! grep -q 'WLANderlust' ~wlanderlust/.profile; then
 			echo 'Auto start WLANderlust for wlanderlust user'
 			echo -e '\nsudo /usr/local/bin/WLANderlust; exit' >> ~wlanderlust/.profile
 		fi

@@ -110,6 +110,9 @@ COOKIEJAR=''
 LOGFILE=''
 GPSFILE=''
 
+AUTOSWITCHHOSTAPCHANNEL='false'
+AUTOREASSOCIATE='false
+
 VERBOSELOGGING='false'
 DEBUGLOGGING='false'
 SHOWPASSWORDS='false'
@@ -677,17 +680,17 @@ showWiFiStatus()
 		# Print some details
 		if $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
 			if [ "$WPASTATE" = 'COMPLETED' ]; then
-				MESSAGE="Connected to \"$SSID\" ($BSSID)"
+				MESSAGE="WiFi interface $INTERFACE ($MACADDRESS) is connected to \"$SSID\" ($BSSID)"
 				[ "$KEYMGMT" = 'NONE' ] &&
 					MESSAGE+=", no encryption" ||
 					MESSAGE+=", $KEYMGMT encryption"
-				MESSAGE+=", channel $CHANNEL, signal $SIGNALSTRENGTH"
+				MESSAGE+=", channel $CHANNEL, signal $SIGNALSTRENGTH dBm"
 				$ISROAMING &&
 					MESSAGE+=", roaming" ||
 					MESSAGE+=", not roaming"
 				logMessage "$MESSAGE"
 			else
-				MESSAGE="WiFi interface $INTERFACE is not connected to an Access Point, $WPASTATE"
+				MESSAGE="WiFi interface $INTERFACE ($MACADDRESS) is not connected to an Access Point, $WPASTATE"
 				$ISROAMING &&
 					MESSAGE+=", roaming" ||
 					MESSAGE+=", not roaming"
@@ -754,11 +757,9 @@ showNetworkStatus()
 		logError "Interface $INTERFACE is down"
 	elif $INTERACTIVE || $VERBOSELOGGING || [ "$PREVIOUSBSSID" != "$BSSID" ]; then
 		# Print some details
-		if ! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]; then
-			$ISWIFIINTERFACE &&
-				MESSAGE='Using WiFi' ||
-				MESSAGE='Using non-WiFi'
-			MESSAGE+=" interface $INTERFACE ($MACADDRESS), IP address: $IPADDRESS, netmask: $NETMASK"
+		if (! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) && [ -n "$IPADDRESS" ]; then
+			MESSAGE=''
+			MESSAGE+="IP address: $IPADDRESS, netmask: $NETMASK"
 			[ ! -z "$GATEWAY" ] &&
 				MESSAGE+=", gateway: $GATEWAY"
 			[ ! -z "$EXTERNALIPADDRESS" ] && [ "$IPOVERDNSSTATE" = 'stopped' ] && [ "$VPNSTATE" = 'stopped' ] &&
@@ -775,7 +776,8 @@ showNetworkStatus()
 					MESSAGE+=", external IP address: $EXTERNALIPADDRESS"
 				logMessage "$MESSAGE"
 			elif [ "$IPOVERDNSSTATE" = 'stopped' ]; then
-				logMessage 'IP over DNS tunnel is not active'
+				$VERBOSELOGGING &&
+					logMessage 'IP over DNS tunnel is not active'
 			else
 				logMessage 'IP over DNS tunnel error'
 			fi
@@ -789,7 +791,8 @@ showNetworkStatus()
 					MESSAGE+=", external IP address: $EXTERNALIPADDRESS"
 				logMessage "$MESSAGE"
 			elif [ "$VPNSTATE" = 'stopped' ]; then
-				logMessage 'VPN is not active'
+				$VERBOSELOGGING &&
+					logMessage 'VPN is not active'
 			else
 				logMessage 'VPN error'
 			fi
@@ -799,9 +802,12 @@ showNetworkStatus()
 
 		# Host Access Pont
 		if [ "$HOSTAPSTATE" = 'started' ]; then
-			MESSAGE="Host Access Point \"$HOSTAPSSID\" ($HOSTAPBSSID) is active using interface $HOSTAPINTERFACE, channel: $HOSTAPCHANNEL, $HOSTAPTXPOWER dBm"
+			MESSAGE="Host Access Point $HOSTAPINTERFACE ($HOSTAPBSSID) \"$HOSTAPSSID\", channel: $HOSTAPCHANNEL, $HOSTAPTXPOWER dBm"
 			MESSAGE+=", IP address: $HOSTAPIPADDRESS, netmask: $HOSTAPNETMASK"
 			logMessage "$MESSAGE"
+		else
+			$VERBOSELOGGING &&
+				logMessage 'Host Access Point not active'
 		fi
 	fi
 }
@@ -835,8 +841,12 @@ reassociateInterface()
 		return 1
 	[ -n "$EXTERNALIPADDRESS" ] &&
 		return 1
-	[ "$PREVIOUSBSSID" = "$BSSID" ] && [ -n "$IPADDRESS" ] &&
+	# Don't reassociate when last time was less then 2 minutes ago
+	LASTREASSOCIATED=`getState 'LASTREASSOCIATED'`
+	[ -n "$LASTREASSOCIATED" ] && [ $LASTREASSOCIATED -gt $((`date +%s` - 120)) ] &&
 		return 1
+	setState 'LASTREASSOCIATED' `date +%s`
+	storeState
 
 	logMessage 'Reassociating...'
 	! $ISROAMING && stopDHClient
@@ -1180,20 +1190,45 @@ stopFirewall()
 # Changes the channel of the Host Access Point
 switchHostAPchannel()
 {
-	if [ -f '/etc/hostapd/hostapd.conf' ] && [ ! -z "$CHANNEL" ]; then
-		NEWHOSTAPCHANNEL=1
-		[ "$CHANNEL" -lt 6 ] && NEWHOSTAPCHANNEL=11
+	[ ! -f '/etc/hostapd/hostapd.conf' ] &&
+		return 1
+	[ -z "$CHANNEL" ] &&
+		return 0
 
-		if [ "$NEWHOSTAPCHANNEL" -ne "$HOSTAPCHANNEL" ]; then
-			logMessage "Changing channel of the Host Access Point to $NEWHOSTAPCHANNEL"
-			# Change channel in hostapd.conf
-			sed "s|^channel=.*$|channel=$NEWHOSTAPCHANNEL|" -i /etc/hostapd/hostapd.conf
-			# restart hostapd
-			# Somehow `service hostapd restart` does not start the service
-			service hostapd stop
-			service hostapd start
-		fi
+	NEWHOSTAPCHANNEL=1
+	[ "$CHANNEL" -lt 6 ] && NEWHOSTAPCHANNEL=11
+
+	if [ "$NEWHOSTAPCHANNEL" -ne "$HOSTAPCHANNEL" ]; then
+		logMessage "Changing channel of the Host Access Point to $NEWHOSTAPCHANNEL"
+		# Change channel in hostapd.conf
+		sed "s|^channel=.*$|channel=$NEWHOSTAPCHANNEL|" -i /etc/hostapd/hostapd.conf
+		# restart hostapd
+		# Somehow `service hostapd restart` does not start the service
+		service hostapd stop
+		service hostapd start
+		return 0
 	fi
+
+	return 1
+}
+
+getGPSStatus()
+{
+	LATITUDE=''
+	LONGITUDE=''
+	_GPSSENTENCE=`gpspipe -n 2 -w | grep -m 1 '"DEVICES"'`
+	_GPSDEVICES=`sed -n 's/.*"devices":\[\([^]]*\)].*/\1/p' <<< "$_GPSSENTENCE"`
+	if [ -n "$_GPSDEVICES" ]; then
+		logMessage 'GPS active'
+		_GPSSENTENCE=`timeout $TIMEOUT gpspipe -w | grep -m 1 '"TPV"'`
+		LATITUDE=`sed -n 's/.*"lat":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+		LONGITUDE=`sed -n 's/.*"lon":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+	fi
+}
+
+showGPSStatus()
+{
+	echo "$LATITUDE,$LONGITUDE"
 }
 
 # User interaction
@@ -1249,6 +1284,7 @@ WLANderlustMenu()
 	while true; do
 		TIMESTAMP=`date +%Y%m%d%H%M%S`
 		BODYLOGFILECOUNTER='1'
+		getGPSStatus
 		getWiFiStatus
 		getNetworkStatus
 		! $VERBOSELOGGING && clear
@@ -1257,6 +1293,7 @@ WLANderlustMenu()
 		showWiFiStatus
 		isCaptivePortalPresent
 		showNetworkStatus
+		showGPSStatus
 		echo
 
 		$INTERFACEISUP &&
@@ -1335,7 +1372,11 @@ WLANderlustMenu()
 		# Flush stdin
 		read -d '' -t 0.1 -n 10000 IGNORE
 
-		if $SCANFORNETWORKS && read -r -p 'Network to configure or option: ' -t 30 || read -r -p 'Option: '; then
+		if $SCANFORNETWORKS; then
+			read -r -p 'Network to configure or option: ' -t 30
+		else
+			read -r -p 'Option: '
+		fi
 			case "$REPLY" in
 				W|w)
 					$SCANFORNETWORKS &&
@@ -1393,7 +1434,6 @@ WLANderlustMenu()
 					fi
 					;;
 			esac
-		fi
 
 		storeState
 	done

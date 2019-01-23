@@ -160,7 +160,10 @@ ToDo
 		fi
 
 		echo
-		apt-get install -y rng-tools
+		# Not realy needed it seems
+		#apt-get install -y rng-tools
+		echo 'Installing IP over DNS tunneling packages'
+		apt-get install -y iodine
 		echo 'Installing VPN packages'
 		apt-get install -y openvpn pptp-linux
 		update-rc.d -f openvpn remove
@@ -203,13 +206,31 @@ if [ "$INSTALLATIONSTATE" = 'gps' ]; then
 \e[0m
 GPS
 
-ToDo
+To be able to detect your USB connected GPS you are advised to disconnect the
+device before proceeding.
 
 \e[1mPress Q to quit, S to skip or any other key to configure your GPS\e[0m'
 	read -n 1 -s 'CHOICE'
 	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
-	#if [ "$CHOICE" = 's' ] && [ "$CHOICE" = 'S' ]; then
-	#fi
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		echo 'Installing GPS packages'
+		apt-get install -y gpsd gpsd-clients
+		#systemctl stop gpsd.socket
+		#systemctl disable gpsd.socket
+
+		echo
+		echo
+		echo 'If you're using an USB connected GPS plugin the device NOW and press any key'
+		read
+		GPSTTY=`ls -tr /dev/ttyUSB* 2> /dev/null | tail -n 1`
+		if [ -n "$GPSTTY" ]; then
+			echo "Your GPS device is connected to $GPSTTY"
+			_UDEVINFO=`udevadm info -a -p  $(udevadm info -q path -n "$GPSTTY")`
+			GPSTTYPRODUCTID=`sed -n 's/^.*ATTRS{idProduct}=="\([^"]*\)"$/\1/p' <<< "$_UDEVINFO" | head -n 1`
+			GPSTTYVENDORID=`sed -n 's/^.*ATTRS{idVendor}=="\([^"]*\)"$/\1/p' <<< "$_UDEVINFO" | head -n 1`
+
+			echo "ACTION==\"add\", KKERNEL==\"ttyUSB?\", ATTRS{idVendor}==\"$GPSTTYVENDORID\", ATTRS{idProduct}==\"$GPSTTYPRODUCTID\", OWNER="gpsd", GROUP="tty", SYMLINK+=\"gps\", TAG+=\"systemd\", ENV{SYSTEMD_WANTS}=\"gpsdctl@%k.service\"" >> /etc/udev/rules.d/61-gpsd.rules
+	fi
 	
 	INSTALLATIONSTATE='hostaccesspoint'
 	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'

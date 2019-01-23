@@ -33,13 +33,17 @@ case $reason in
 		$AUTOSOLVECAPTIVEPORTAL && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --solve"
 		$AUTOSTARTIPOVERDNS && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --startIPoverDNS"
 		$AUTOSTARTVPN && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --startVPN"
-		WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --restartFirewall --reassociate --append2WPAsupplicant --switchHostAPchannel --status"
+		$AUTOSWITCHHOSTAPCHANNEL && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --switchHostAPchannel"
+		$AUTOREASSOCIATE && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --reassociate"
+		WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --restartFirewall --append2WPAsupplicant --status"
 		eval "$WLANDERLUSTCOMMAND"
 		;;
 	RENEW)
-		$AUTOSOLVECAPTIVEPORTAL &&
-			/usr/local/bin/WLANderlust -i "$interface" --solve --restartFirewall --reassociate  --status ||
-			/usr/local/bin/WLANderlust -i "$interface" --reassociate --status
+		WLANDERLUSTCOMMAND="/usr/local/bin/WLANderlust -i '$interface'"
+		$AUTOREASSOCIATE && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --reassociate"
+		$AUTOSOLVECAPTIVEPORTAL && WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --solve"
+		WLANDERLUSTCOMMAND="$WLANDERLUSTCOMMAND --status"
+		eval "$WLANDERLUSTCOMMAND"
 		;;
 	RELEASE|EXPIRE|STOPPED)
 		/usr/local/bin/WLANderlust -i "$interface" --stopFirewall --stopVPN --stopIPoverDNS --status

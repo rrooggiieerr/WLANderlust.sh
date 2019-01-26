@@ -9,180 +9,215 @@
 #
 # A handy oneliner if you like to show the WiFi networks in last logfile sorted
 # on best signal:
-# tail -n +2 WiGLE.log | sort -n --field-separator=';' -k 23 | awk -F\; '{print $23" "$4" \""$3"\""}'
+# tail -n +2 `ls WiGLE-*.log | tail -n 1` | sort -n -r --field-separator=';' -k 23 | awk -F\; '{print $23" "$4" \""$3"\""}'
 
 INTERFACE='wlan1'
-# Apperently the iw command is more future and feature proof, however this
-# script curently uses the iwlist command to retrieve the WiFi details
+VERBOSELOGGING='true'
+# Write the log every 5 minutes
+LOGINTERVAL=300
+
+# Apparently the iw command is more future and feature proof, however this
+# script currently uses the iwlist command to retrieve the WiFi details
 USEIW='false'
 
-# Get the Host AP interface, SSID and channel
+# Get the Host AP SSID
 if [ -f '/etc/hostapd/hostapd.conf' ]; then
-	_HOSTAPDCONF=`cat '/etc/hostapd/hostapd.conf'`
-	HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' <<< "$_HOSTAPDCONF"`
-	HOSTAPSSID=`sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$_HOSTAPDCONF"`
-
-	_IWDEVINFO=`/sbin/iw dev "$HOSTAPINTERFACE" info`
-	HOSTAPBSSID=`sed -n 's|^.*addr \([0-9a-f:]\+\)$|\1|p' <<< "$_IWDEVINFO"`
+	HOSTAPINTERFACE=`sed -n 's|^interface=\(.*\)$|\1|p' /etc/hostapd/hostapd.conf`
+	HOSTAPBSSID=`/sbin/iw dev "$HOSTAPINTERFACE" info | sed -n 's|^.*addr \([0-9a-f:]\+\)$|\1|p'`
 	# Uppercase Host AP BSSID
 	HOSTAPBSSID="${HOSTAPBSSID^^}"
+	$VERBOSELOGGING && echo "Your Host AP BSSID: $HOSTAPBSSID"
 fi
 
 LOGFILE=~/WiGLE-`date +%Y%m%d%H`.log
+# If there already is a logfile with the same name load it
 [ -f "$LOGFILE" ] &&
-	LOG=`cat "$LOGFILE"`
+	LOG=`tail -n +2 "$LOGFILE"`
+LASTLOG=`date +%s`
 
-NETWORKCOUNTER=`wc -l <<< "$LOG"`
+NETWORKCOUNTER=1
+[ -n "$LOG" ] &&
+	NETWORKCOUNTER=$((`wc -l <<< "$LOG"` + 1))
+
 while true; do
-	# Create a new logfile on the hour
-	LOGFILE=~/WiGLE-`date +%Y%m%d%H`.log
-	if [ ! -f "$LOGFILE" ]; then
-		# Initialize the new log with a header
-		LOG='Network;NetType;ESSID;BSSID;Info;Channel;Cloaked;Encryption;Decrypted;MaxRate;MaxSeenRate;Beacon;LLC;Data;Crypt;Weak;Total;Carrier;Encoding;FirstTime;LastTime;BestQuality;BestSignal;BestNoise;GPSMinLat;GPSMinLon;GPSMinAlt;GPSMinSpd;GPSMaxLat;GPSMaxLon;GPSMaxAlt;GPSMaxSpd;GPSBestLat;GPSBestLon;GPSBestAlt;DataSize;IPType;IP;'
-		# Reset the network counter
-		NETWORKCOUNTER=1
-	fi
-	
 	# Check if a GPS device is connected
 	_GPSSENTENCE=`gpspipe -n 2 -w | grep -m 1 '"class":"DEVICES"'`
 	_GPSDEVICES=`sed -n 's/.*"devices":\[\([^]]*\)].*/\1/p' <<< "$_GPSSENTENCE"`
-	if [ -n "$_GPSDEVICES" ]; then
-		# Only continue if we have a GPS device
-		if $USEIW; then
-			while ! IWSCAN=`sudo iw dev "$INTERFACE" scan 2> /dev/null`; do
-				echo -n '.'
-				sleep 1
-			done
-			BSSIDS=`sed -n 's|^BSS \([0-9a-f:]*\).*$|\1|p' <<< "$IWSCAN"`
-		else
-			while ! IWLISTSCAN=`sudo iwlist "$INTERFACE" scan 2> /dev/null`; do
-				echo -n '.'
-				sleep 1
-			done
-			BSSIDS=`sed -n 's|.* - Address: \([0-9A-F:]*\)|\1|p' <<< "$IWLISTSCAN"`
+	if [ -z "$_GPSDEVICES" ]; then
+		echo 'No GPS connected!'
+		sleep 5
+		continue
+	fi
+	# Only continue if we have a GPS device
+	
+	if $USEIW; then
+		if ! IWSCAN=`sudo iw dev "$INTERFACE" scan 2> /dev/null`; then
+			echo -n '.'
+			sleep 1
+			continue
 		fi
-		# Uppercase BSSIDs
-		BSSIDS="${BSSIDS^^}"
-
-		if _GPSSENTENCE=`timeout 2 gpspipe -w | grep -m 1 '"class":"TPV"'`; then
-			LATITUDE=`sed -n 's/.*"lat":\(-\?[0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
-			LONGITUDE=`sed -n 's/.*"lon":\(-\?[0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
-			ALTITUDE=`sed -n 's/.*"alt":\(-\?[0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
-			SPEED=`sed -n 's/.*"speed":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+		BSSIDS=`sed -n 's|^BSS \([0-9a-f:]*\).*$|\1|p' <<< "$IWSCAN"`
+	else
+		if ! IWLISTSCAN=`sudo iwlist "$INTERFACE" scan 2> /dev/null`; then
+			echo -n '.'
+			sleep 1
+			continue
 		fi
-		# Is this the right date format to use?
-		LASTSEEN=`date -u`
+		BSSIDS=`sed -n 's|.* - Address: \([0-9A-F:]*\)|\1|p' <<< "$IWLISTSCAN"`
+	fi
+	# Uppercase BSSIDs
+	BSSIDS="${BSSIDS^^}"
 
-		for BSSID in $BSSIDS; do
-			if [ "$BSSID" != "$HOSTAPBSSID" ]; then
-				if $USEIW; then
-					BSSIDINFO=`grep -A 100 -i "^BSS $BSSID" <<< "$IWSCAN"`
-					tail -n +2 <<< "$BSSIDINFO" | grep -q '^BSS ' &&
-						BSSIDINFO=`grep -m 2 -B 100 '^BSS ' <<< "$BSSIDINFO" | head -n -1`
-					echo "$BSSIDINFO"
-					CHANNEL=`sed -n 's|.*DS Parameter set: channel \([0-9]*\).*|\1|p' <<< "$BSSIDINFO"`
-					echo "CHANNEL=$CHANNEL"
-					ESSID=`sed -n 's|.*SSID: \(.*\)|\1|p' <<< "$BSSIDINFO"`
-					echo "ESSID=$ESSID"
-					SIGNAL=`sed -n 's|.*signal: \(-[0-9.]*\) .*|\1|p' <<< "$BSSIDINFO"`
-					echo "SIGNAL=$SIGNAL"
+	if _GPSSENTENCE=`timeout 2 gpspipe -w | grep -m 1 '"class":"TPV"'`; then
+		LATITUDE=`sed -n 's/.*"lat":\(-\?[0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+		LONGITUDE=`sed -n 's/.*"lon":\(-\?[0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+		ALTITUDE=`sed -n 's/.*"alt":\(-\?[0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+		SPEED=`sed -n 's/.*"speed":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+	fi
+	# Is this the right date format to use?
+	LASTSEEN=`date -u`
+
+	for BSSID in $BSSIDS; do
+		if [ "$BSSID" != "$HOSTAPBSSID" ]; then
+			if $USEIW; then
+				BSSIDINFO=`grep -A 100 -i "^BSS $BSSID" <<< "$IWSCAN"`
+				tail -n +2 <<< "$BSSIDINFO" | grep -q '^BSS ' &&
+					BSSIDINFO=`grep -m 2 -B 100 '^BSS ' <<< "$BSSIDINFO" | head -n -1`
+				echo "$BSSIDINFO"
+				CHANNEL=`sed -n 's|.*DS Parameter set: channel \([0-9]*\).*|\1|p' <<< "$BSSIDINFO"`
+				echo "CHANNEL=$CHANNEL"
+				ESSID=`sed -n 's|.*SSID: \(.*\)|\1|p' <<< "$BSSIDINFO"`
+				echo "ESSID=$ESSID"
+				SIGNAL=`sed -n 's|.*signal: \(-[0-9.]*\) .*|\1|p' <<< "$BSSIDINFO"`
+				echo "SIGNAL=$SIGNAL"
+			else
+				BSSIDINFO=`grep -A 50 " - Address: $BSSID" <<< "$IWLISTSCAN"`
+				tail -n +2 <<< "$BSSIDINFO" | grep -q ' - Address: ' &&
+					BSSIDINFO=`grep -m 2 -B 50 ' - Address: ' <<< "$BSSIDINFO" | head -n -1`
+				BSSIDINFO=`grep -v " IE: Unknown: " <<< "$BSSIDINFO"`
+				CHANNEL=`sed -n 's|.*Channel:\([0-9]*\)|\1|p' <<< "$BSSIDINFO"`
+				ESSID=`sed -n 's|.*ESSID:"\(.*\)"|\1|p' <<< "$BSSIDINFO"`
+				SIGNAL=`sed -n 's|.*Signal level=\(-[0-9]*\).*|\1|p' <<< "$BSSIDINFO"`
+
+				MODE=`sed -n 's|.*Mode:\(.*\)|\1|p' <<< "$BSSIDINFO"`
+				if [ "$MODE" = 'Master' ]; then
+					MODE='infrastructure'
+				elif [ "$MODE" = 'Ad-Hoc' ]; then
+					MODE='ad-hoc'
+				#ToDo "$MODE" = 'Unknown/bug'
 				else
-					BSSIDINFO=`grep -A 50 " - Address: $BSSID" <<< "$IWLISTSCAN"`
-					tail -n +2 <<< "$BSSIDINFO" | grep -q ' - Address: ' &&
-						BSSIDINFO=`grep -m 2 -B 50 ' - Address: ' <<< "$BSSIDINFO" | head -n -1`
-					BSSIDINFO=`grep -v " IE: Unknown: " <<< "$BSSIDINFO"`
-					CHANNEL=`sed -n 's|.*Channel:\([0-9]*\)|\1|p' <<< "$BSSIDINFO"`
-					ESSID=`sed -n 's|.*ESSID:"\(.*\)"|\1|p' <<< "$BSSIDINFO"`
-					SIGNAL=`sed -n 's|.*Signal level=\(-[0-9]*\).*|\1|p' <<< "$BSSIDINFO"`
-					MODE=`sed -n 's|.*Mode:\(.*\)|\1|p' <<< "$BSSIDINFO"`
-					[ "$MODE" = 'Master' ] &&
-						MODE='infrastructure' ||
-						echo "MODE=$MODE"
-					# ad-hoc
-					ENCRYPTION=`sed -n 's|.*Encryption key:\(.*\)|\1|p' <<< "$BSSIDINFO"`
-					if [ "$ENCRYPTION" = 'off' ]; then
-						ENCRYPTION='None'
-					else
-						_IE=`grep -A 50 ' IE: ' <<< "$BSSIDINFO"`
-						_GROUPCIPHER=`sed -n 's|.*Group Cipher : \(.*\)|\1|p' <<< "$_IE" | uniq`
-						ENCRYPTION="$_GROUPCIPHER"
-						grep -q 'WPA Version 1' <<< "$_IE" &&
-							ENCRYPTION+=',WPA'
-						grep -q 'WPA2 Version 1' <<< "$_IE" &&
-							ENCRYPTION+=',WPA2'
-					fi
-					RATES=`grep -o '[0-9]* Mb/s' <<< "$BSSIDINFO" | sed 's| Mb/s||'`
-					RATES=`sort -n <<< "$RATES"`
-					MAXRATE=`tail -n 1 <<< "$RATES"`
-					if [ "$MAXRATE" -le 11 ]; then
-						CARRIER='IEEE 802.11b'
-					elif [ "$MAXRATE" -gt 54 ]; then
-						CARRIER='IEEE 802.11b,IEEE 802.11g,IEEE 802.11n'
-					else
-						CARRIER='IEEE 802.11b,IEEE 802.11g'
-					fi
+					echo "MODE=$MODE"
 				fi
 
-				LOGENTRY=`grep "^.*;$BSSID;.*$" <<< "$LOG" | tail -n 1`
-				if [ -n "$LOGENTRY" ]; then
-					#LOG=`grep -v ".*;$BSSID;.*" <<< "$LOG"`
-					_NETWORK=`sed 's|^\([0-9]*\);.*|\1|' <<< "$LOGENTRY"`
-					LOGENTRY=`sed "s/[^;]*/$LASTSEEN/"21 <<< "$LOGENTRY"`
-
-					BESTSIGNAL=`awk -F\; '{print $23}' <<< "$LOGENTRY"`
-					if [ $BESTSIGNAL -lt $SIGNAL ]; then
-						LOGENTRY=`sed "s/[^;]*/$SIGNAL/"23 <<< "$LOGENTRY"`
-						LOGENTRY=`sed "s/[^;]*/$LATITUDE/"33 <<< "$LOGENTRY"`
-						LOGENTRY=`sed "s/[^;]*/$LONGITUDE/"34 <<< "$LOGENTRY"`
-						LOGENTRY=`sed "s/[^;]*/$ALTITUDE/"35 <<< "$LOGENTRY"`
-					fi
-
-					MINLATITUDE=`awk -F\; '{print $25}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($LATITUDE < $MINLATITUDE) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$LATITUDE/"25 <<< "$LOGENTRY"`
-
-					MINLONGITUDE=`awk -F\; '{print $26}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($LONGITUDE < $MINLONGITUDE) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$LONGITUDE/"26 <<< "$LOGENTRY"`
-
-					MINALTITUDE=`awk -F\; '{print $27}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($ALTITUDE < $ALTITUDE) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$ALTITUDE/"27 <<< "$LOGENTRY"`
-
-					MINSPEED=`awk -F\; '{print $28}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($SPEED < $MINSPEED) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$SPEED/"28 <<< "$LOGENTRY"`
-
-					MAXLATITUDE=`awk -F\; '{print $29}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($LATITUDE > $MAXLATITUDE) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$LATITUDE/"29 <<< "$LOGENTRY"`
-
-					MAXLONGITUDE=`awk -F\; '{print $30}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($LONGITUDE > $MAXLONGITUDE) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$LONGITUDE/"30 <<< "$LOGENTRY"`
-
-					MAXALTITUDE=`awk -F\; '{print $31}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($ALTITUDE > $MAXALTITUDE) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$ALTITUDE/"31 <<< "$LOGENTRY"`
-
-					MAXSPEED=`awk -F\; '{print $32}' <<< "$LOGENTRY"`
-					awk "BEGIN { exit ($SPEED > $MAXSPEED) ? 0 : 1 }" &&
-						LOGENTRY=`sed "s/[^;]*/$SPEED/"32 <<< "$LOGENTRY"`
-
-					# Replace entry
-					LOG=`sed "/^$_NETWORK;/c\\\\$LOGENTRY" <<< "$LOG"`
+				ENCRYPTION=`sed -n 's|.*Encryption key:\(.*\)|\1|p' <<< "$BSSIDINFO"`
+				if [ "$ENCRYPTION" = 'off' ]; then
+					ENCRYPTION='None'
 				else
-					# Network;NetType;ESSID;BSSID;Info;Channel;Cloaked;Encryption;Decrypted;MaxRate;MaxSeenRate;Beacon;LLC;Data;Crypt;Weak;Total;Carrier;Encoding;FirstTime;LastTime;BestQuality;BestSignal;BestNoise;GPSMinLat;GPSMinLon;GPSMinAlt;GPSMinSpd;GPSMaxLat;GPSMaxLon;GPSMaxAlt;GPSMaxSpd;GPSBestLat;GPSBestLon;GPSBestAlt;DataSize;IPType;IP;
-					LOGENTRY="$NETWORKCOUNTER;$MODE;$ESSID;$BSSID;;$CHANNEL;No;$ENCRYPTION;No;$MAXRATE;;;;;;;;$CARRIER;;$LASTSEEN;$LASTSEEN;;$SIGNAL;;$LATITUDE;$LONGITUDE;$ALTITUDE;$SPEED;$LATITUDE;$LONGITUDE;$ALTITUDE;$SPEED;$LATITUDE;$LONGITUDE;$ALTITUDE;;;;"
-					NETWORKCOUNTER=$((NETWORKCOUNTER + 1))
-					# Add entry
-					LOG+=$'\n'"$LOGENTRY"
+				_IE=`grep -A 50 ' IE: ' <<< "$BSSIDINFO"`
+				_GROUPCIPHER=`sed -n 's|.*Group Cipher : \(.*\)|\1|p' <<< "$_IE" | uniq`
+				ENCRYPTION="$_GROUPCIPHER"
+				grep -q 'WPA Version 1' <<< "$_IE" &&
+						ENCRYPTION+=',WPA'
+					grep -q 'WPA2 Version 1' <<< "$_IE" &&
+						ENCRYPTION+=',WPA2'
+				fi
+				RATES=`grep -o '[0-9]* Mb/s' <<< "$BSSIDINFO" | sed 's| Mb/s||'`
+				RATES=`sort -n <<< "$RATES"`
+				MAXRATE=`tail -n 1 <<< "$RATES"`
+				if [ "$MAXRATE" -le 11 ]; then
+					CARRIER='IEEE 802.11b'
+				elif [ "$MAXRATE" -gt 54 ]; then
+					CARRIER='IEEE 802.11b,IEEE 802.11g,IEEE 802.11n'
+				else
+					CARRIER='IEEE 802.11b,IEEE 802.11g'
 				fi
 			fi
-		done
+
+			LOGENTRY=`grep "^.*;$BSSID;.*$" <<< "$LOG"`
+			if [ -n "$LOGENTRY" ]; then
+				$VERBOSELOGGING && echo "Updating BSSID $BSSID"
+				LOG=`grep -v ".*;$BSSID;.*" <<< "$LOG"`
+				_NETWORK=`sed 's|^\([0-9]*\);.*|\1|' <<< "$LOGENTRY"`
+				LOGENTRY=`sed "s/[^;]*/$LASTSEEN/"21 <<< "$LOGENTRY"`
+
+				BESTSIGNAL=`awk -F\; '{print $23}' <<< "$LOGENTRY"`
+				if [ $BESTSIGNAL -lt $SIGNAL ]; then
+					LOGENTRY=`sed "s/[^;]*/$SIGNAL/"23 <<< "$LOGENTRY"`
+					LOGENTRY=`sed "s/[^;]*/$LATITUDE/"33 <<< "$LOGENTRY"`
+					LOGENTRY=`sed "s/[^;]*/$LONGITUDE/"34 <<< "$LOGENTRY"`
+					LOGENTRY=`sed "s/[^;]*/$ALTITUDE/"35 <<< "$LOGENTRY"`
+				fi
+
+				MINLATITUDE=`awk -F\; '{print $25}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($LATITUDE < $MINLATITUDE) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$LATITUDE/"25 <<< "$LOGENTRY"`
+
+				MINLONGITUDE=`awk -F\; '{print $26}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($LONGITUDE < $MINLONGITUDE) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$LONGITUDE/"26 <<< "$LOGENTRY"`
+
+				MINALTITUDE=`awk -F\; '{print $27}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($ALTITUDE < $ALTITUDE) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$ALTITUDE/"27 <<< "$LOGENTRY"`
+
+				MINSPEED=`awk -F\; '{print $28}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($SPEED < $MINSPEED) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$SPEED/"28 <<< "$LOGENTRY"`
+
+				MAXLATITUDE=`awk -F\; '{print $29}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($LATITUDE > $MAXLATITUDE) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$LATITUDE/"29 <<< "$LOGENTRY"`
+
+				MAXLONGITUDE=`awk -F\; '{print $30}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($LONGITUDE > $MAXLONGITUDE) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$LONGITUDE/"30 <<< "$LOGENTRY"`
+
+				MAXALTITUDE=`awk -F\; '{print $31}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($ALTITUDE > $MAXALTITUDE) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$ALTITUDE/"31 <<< "$LOGENTRY"`
+
+				MAXSPEED=`awk -F\; '{print $32}' <<< "$LOGENTRY"`
+				awk "BEGIN { exit ($SPEED > $MAXSPEED) ? 0 : 1 }" &&
+					LOGENTRY=`sed "s/[^;]*/$SPEED/"32 <<< "$LOGENTRY"`
+
+				# Replace entry
+				#LOG=`sed "/^$_NETWORK;/c\\\\$LOGENTRY" <<< "$LOG"`
+			else
+				$VERBOSELOGGING && echo "New BSSID $BSSID"
+				# Network;NetType;ESSID;BSSID;Info;Channel;Cloaked;Encryption;Decrypted;MaxRate;MaxSeenRate;Beacon;LLC;Data;Crypt;Weak;Total;Carrier;Encoding;FirstTime;LastTime;BestQuality;BestSignal;BestNoise;GPSMinLat;GPSMinLon;GPSMinAlt;GPSMinSpd;GPSMaxLat;GPSMaxLon;GPSMaxAlt;GPSMaxSpd;GPSBestLat;GPSBestLon;GPSBestAlt;DataSize;IPType;IP;
+				LOGENTRY="$NETWORKCOUNTER;$MODE;$ESSID;$BSSID;;$CHANNEL;No;$ENCRYPTION;No;$MAXRATE;;;;;;;;$CARRIER;;$LASTSEEN;$LASTSEEN;;$SIGNAL;;$LATITUDE;$LONGITUDE;$ALTITUDE;$SPEED;$LATITUDE;$LONGITUDE;$ALTITUDE;$SPEED;$LATITUDE;$LONGITUDE;$ALTITUDE;;;;"
+				NETWORKCOUNTER=$((NETWORKCOUNTER + 1))
+			fi
+
+			# Add entry
+			[ -n "$LOG" ] &&
+				LOG+=$'\n'
+			LOG+="$LOGENTRY"
+		fi
+	done
+
+	# Create a new logfile on the hour
+	NEWLOGFILE=~/WiGLE-`date +%Y%m%d%H`.log
+	if [ `date +%s` -ge $(($LASTLOG + $LOGINTERVAL)) ] || [ "$NEWLOGFILE" != "$LOGFILE" ]; then
+		if [ -n "$LOG" ]; then
+			$VERBOSELOGGING && echo "Writing logfile $LOGFILE"
+			# Write the header
+			echo 'Network;NetType;ESSID;BSSID;Info;Channel;Cloaked;Encryption;Decrypted;MaxRate;MaxSeenRate;Beacon;LLC;Data;Crypt;Weak;Total;Carrier;Encoding;FirstTime;LastTime;BestQuality;BestSignal;BestNoise;GPSMinLat;GPSMinLon;GPSMinAlt;GPSMinSpd;GPSMaxLat;GPSMaxLon;GPSMaxAlt;GPSMaxSpd;GPSBestLat;GPSBestLon;GPSBestAlt;DataSize;IPType;IP;' > "$LOGFILE"
+			# Sort the log entries on the network counter field
+			sort -n --field-separator=';' -k 1 <<< "$LOG" >> "$LOGFILE"
+		fi
+
+		if [ "$NEWLOGFILE" != "$LOGFILE" ]; then
+			LOGFILE="$NEWLOGFILE"
+			# Reset the log and network counter
+			LOG=''
+			NETWORKCOUNTER=1
+		fi
+
+		LASTLOG=`date +%s`
 	fi
-	#ToDo Don't write the log so frequently, but forinstance every 5 minutes
-	echo "$LOG" > "$LOGFILE"
-	# Just wait a bit before we scan again
-	sleep 5
+
+	# Maybe wait a bit before we scan again?
+	# 1 second is about 27.8 meters when driving at 100 KM/H
+	#sleep 1
 done

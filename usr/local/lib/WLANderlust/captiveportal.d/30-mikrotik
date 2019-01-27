@@ -53,11 +53,17 @@ if tr -d '\n\r' <<< "$BODY" | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; 
 	if [ -z "$USERNAME" ]; then
 		USERNAME=`getCaptivePortalUsername "$BSSID" "$SSID" "$LOCATION"`
 	fi
+	#ToDo if interactive and empty username ask for username
+	#if $INTERACTIVE && [ -z "$USERNAME" ]; then
+	#fi
 
 	PASSWORD=`sed -n "s|^.*<input [^>]*\bname=[\"']password[\"'] [^>]*\bvalue=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|p" <<< "$FORM"`
 	if [ -z "$PASSWORD" ]; then
 		 PASSWORD=`getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"`
 	fi
+	#ToDo if interactive and empty password ask for password
+	#if $INTERACTIVE && [ -z "$PASSWORD" ]; then
+	#fi
 
 	if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
 		logError "No login credentials for \"$BSSID\" \"$SSID\" \"$LOCATION\""
@@ -96,8 +102,12 @@ if tr -d '\n\r' <<< "$BODY" | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; 
 	for INPUT in $INPUTS; do
 		INPUTNAME=`sed -n "s|.* name=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
 		case "$INPUTNAME" in
-			username) INPUTVALUE="$USERNAME" ;;
-			password) INPUTVALUE="$PASSWORD" ;;
+			username)
+				INPUTVALUE="$USERNAME"
+				;;
+			password)
+				INPUTVALUE="$PASSWORD"
+				;;
 			*) INPUTVALUE=`sed -n "s|.* value=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"` ;;
 		esac
 		[ ! -z "$POSTDATA" ] && POSTDATA+="&"
@@ -107,9 +117,14 @@ if tr -d '\n\r' <<< "$BODY" | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; 
 	logMessage "POSTDATA: $POSTDATA"
 
 	curlPost "$FORMACTION" "$POSTDATA"
-	#if curlPost "$FORMACTION" "$POSTDATA"; then
-	#	CAPTIVEPORTALSTATE='failure'
-	#else
-		CAPTIVEPORTALSTATE='failure'
-	#fi
+	getLocationHeader "$BODY" "$LOCATION"
+	getBody "$LOCATION" true
+
+	# Check if Captive Portal has been resolved
+	if checkCaptivePortalPresence; then
+		logMessage 'Captive portal still present'
+	elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
+		# Ok, we were able to authenticate
+		logMessage 'Captive portal succesfully solved'
+	fi
 fi

@@ -26,11 +26,9 @@ logMessage 'Unknown captive portal'
 CAPTIVEPORTALTYPE='other'
 
 # Check if Captive Portal has been resolved
-if recheckCaptivePortal; then
+if checkCaptivePortalPresence; then
 	logMessage 'Captive portal still present'
-	CAPTIVEPORTALSTATE='present'
-else
+elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
 	# Ok, the Captive Portal seems to be resolved by itself, it probaly was just a splash screen
 	logMessage 'Captive portal resolved by itself'
-	CAPTIVEPORTALSTATE='solved'
 fi

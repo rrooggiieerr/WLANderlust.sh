@@ -10,6 +10,7 @@ if ! grep -q "^# Captive Portal detection" <<< "$DEFAULTCONFIG"; then
 	DEFAULTCONFIG+="
 
 PASSWORDSFILE=''
+CAPTIVEPORTALEMAIL=''
 
 # Captive Portal detection
 CAPTIVEPORTALLOGGING='false'
@@ -178,19 +179,109 @@ EOF
 	return 0
 }
 
-recheckCaptivePortal()
+checkCaptivePortalPresence()
 {
-	if checkCaptivePortalPresence; then
-		# Ok, we were able to authenticate
-		logMessage 'Captive portal succesfully solved'
-		CAPTIVEPORTALSTATE='solved'
-		return 0
-	else
-		# Authentication failed
-		logMessage 'Captive portal still present'
-		CAPTIVEPORTALSTATE='failure'
+	# Checks for the existence of a Captive Portal
+	# Returns 0 if Captive Portal is present, else 1
+
+	if ! $INTERFACEISUP ||
+		($ISWIFIINTERFACE && [ "$WPASTATE" != 'COMPLETED' ]) ||
+		[ -z "$IPADDRESS" ]; then
+		logError "Interface $INTERFACE is not connected"
+		LOCATION=''
+		BODY=''
+		setState 'CAPTIVEPORTALTYPE' 'unknown'
+		setState 'CAPTIVEPORTALSTATE' 'unknown'
 		return 1
 	fi
+
+	if [ "$PREVIOUSBSSID" = "$BSSID" ]; then
+		CAPTIVEPORTALTYPE=`getState 'CAPTIVEPORTALTYPE'`
+		CAPTIVEPORTALSTATE=`getState 'CAPTIVEPORTALSTATE'`
+	else
+		setState 'CAPTIVEPORTALTYPE' 'unknown'
+		setState 'CAPTIVEPORTALSTATE' 'unknown'
+	fi
+
+	if [ "$IPOVERDNSSTATE" != 'stopped' ] || [ "$VPNSTATE" != 'stopped' ]; then
+		# If IP over DNS tunneling or VPN is active we use the previus state
+		if [ "$CAPTIVEPORTALSTATE" = 'none' ]; then
+			logMessage 'No Captive Portal is present'
+		elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
+			logMessage 'Captive Portal is solved'
+		elif [ "$CAPTIVEPORTALSTATE" = 'present' ]; then
+			logMessage 'Captive Portal is present'
+		elif [ "$CAPTIVEPORTALSTATE" = 'failure' ]; then
+			logMessage 'Captive Portal failure'
+		fi
+		return 1
+	fi
+
+	$INTERACTIVE && echo -n 'Detecting Captive Portal'
+
+	_CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
+	$INTERACTIVE && echo -n '.'
+	if ! host -t A -W $TIMEOUT "$_CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+		$INTERACTIVE && echo -n ' '
+		logError "Captive portal detection hostname $_CAPTIVEPORTALDETECTIONHOSTNAME could not be resolved"
+		if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+			setState 'CAPTIVEPORTALSTATE' 'failure'
+		fi
+		storeState
+		return 1
+	fi
+
+	rm -f "$COOKIEJAR"
+	BODYLOGFILECOUNTER='1'
+	#if $INTERACTIVE && echo -n '.'; ! BODY=`curl --interface "$INTERFACE" -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL"`; then
+	#	logError "Failed to retrieve '$CAPTIVEPORTALDETECTIONURL'"
+	if $INTERACTIVE && echo -n '.'; ! curlGet "$CAPTIVEPORTALDETECTIONURL"; then
+		# An error message is already logged in the curlGet function
+		if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+			setState 'CAPTIVEPORTALSTATE' 'failure'
+		fi
+	elif $INTERACTIVE && echo -n '.'; [ -z "$BODY" ]; then
+		# Failure
+		$INTERACTIVE && echo -n ' '
+		logError "Empty body when detecting captive portal"
+		if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
+			setState 'CAPTIVEPORTALSTATE' 'failure'
+		fi
+	elif $INTERACTIVE && echo -n '.'; grep -q "$CAPTIVEPORTALDETECTIONRESPONSE" <<< "$BODY"; then
+		# No Captive portal
+		! $INTERACTIVE && $VERBOSELOGGING && logMessage "No captive portal detected"
+		if [ "$PREVIOUSBSSID" = "$BSSID" ] && [ ! -z "$CAPTIVEPORTALTYPE" ] &&
+			[ "$CAPTIVEPORTALTYPE" != 'none' ] && [ "$CAPTIVEPORTALTYPE" != 'unknown' ]; then
+			setState 'CAPTIVEPORTALSTATE' 'solved'
+			$INTERACTIVE && echo " $CAPTIVEPORTALTYPE, Solved"
+		else
+			setState 'CAPTIVEPORTALTYPE' 'none'
+			setState 'CAPTIVEPORTALSTATE' 'none'
+			$INTERACTIVE && echo ' None'
+		fi
+
+		if $CAPTIVEPORTALLOGGING; then
+			rm "$CAPTIVEPORTALLOGPATH/CaptivePortal$TIMESTAMP-"*.log
+		fi
+	else
+		# Captive portal present
+		logMessage 'Captive Portal present'
+
+		#LOCATION="$CAPTIVEPORTALDETECTIONURL"
+		getLocationHeader "$BODY" && [ ! -z "$LOCATION" ] &&
+			! $INTERACTIVE && $VERBOSELOGGING && logMessage "Captive Portal location: \"$LOCATION\""
+
+		if $INTERACTIVE && echo -n '.'; [ "$PREVIOUSBSSID" != "$BSSID" ] || [ -z "$CAPTIVEPORTALTYPE" ] ||
+			[ "$CAPTIVEPORTALTYPE" = 'none' ]; then
+			setState 'CAPTIVEPORTALTYPE' 'unknown'
+		fi
+		setState 'CAPTIVEPORTALSTATE' 'present'
+		storeState
+		return 0
+	fi
+
+	storeState
+	return 1
 }
 
 case "$1" in
@@ -328,103 +419,8 @@ case "$1" in
 		fi
 		;;
 	'STATE')
-		# Checks for the existence of a Captive Portal
-		# Returns 0 if Captive Portal is present, else 1
-
-		if $INTERFACEISUP && (! $ISWIFIINTERFACE || [ "$WPASTATE" = 'COMPLETED' ]) && [ ! -z "$IPADDRESS" ]; then
-			if [ "$PREVIOUSBSSID" = "$BSSID" ]; then
-				CAPTIVEPORTALTYPE=`getState 'CAPTIVEPORTALTYPE'`
-				CAPTIVEPORTALSTATE=`getState 'CAPTIVEPORTALSTATE'`
-			else
-				setState 'CAPTIVEPORTALTYPE' 'unknown'
-				setState 'CAPTIVEPORTALSTATE' 'unknown'
-			fi
-
-			if [ "$IPOVERDNSSTATE" != 'stopped' ] || [ "$VPNSTATE" != 'stopped' ]; then
-				# If IP over DNS tunneling or VPN is active we use the previus state
-				if [ "$CAPTIVEPORTALSTATE" = 'none' ]; then
-					logMessage 'No Captive Portal is present'
-				elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
-					logMessage 'Captive Portal is solved'
-				elif [ "$CAPTIVEPORTALSTATE" = 'present' ]; then
-					logMessage 'Captive Portal is present'
-				elif [ "$CAPTIVEPORTALSTATE" = 'failure' ]; then
-					logMessage 'Captive Portal failure'
-				fi
-				return 1
-			fi
-
-			$INTERACTIVE && echo -n 'Detecting Captive Portal'
-
-			_CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
-			$INTERACTIVE && echo -n '.'
-			if ! host -t A -W $TIMEOUT "$_CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
-				$INTERACTIVE && echo -n ' '
-				logError "Captive portal detection hostname $_CAPTIVEPORTALDETECTIONHOSTNAME could not be resolved"
-				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
-					setState 'CAPTIVEPORTALSTATE' 'failure'
-				fi
-				storeState
-				return
-			fi
-
-			rm -f "$COOKIEJAR"
-			BODYLOGFILECOUNTER='1'
-			#if $INTERACTIVE && echo -n '.'; ! BODY=`curl --interface "$INTERFACE" -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL"`; then
-			#	logError "Failed to retrieve '$CAPTIVEPORTALDETECTIONURL'"
-			if $INTERACTIVE && echo -n '.'; ! curlGet "$CAPTIVEPORTALDETECTIONURL"; then
-				# An error message is already logged in the curlGet function
-				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
-					setState 'CAPTIVEPORTALSTATE' 'failure'
-				fi
-			elif $INTERACTIVE && echo -n '.'; [ -z "$BODY" ]; then
-				# Failure
-				$INTERACTIVE && echo -n ' '
-				logError "Empty body when detecting captive portal"
-				if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
-					setState 'CAPTIVEPORTALSTATE' 'failure'
-				fi
-			elif $INTERACTIVE && echo -n '.'; grep -q "$CAPTIVEPORTALDETECTIONRESPONSE" <<< "$BODY"; then
-				# No Captive portal
-				! $INTERACTIVE && $VERBOSELOGGING && logMessage "No captive portal detected"
-				if [ "$PREVIOUSBSSID" = "$BSSID" ] && [ ! -z "$CAPTIVEPORTALTYPE" ] &&
-					[ "$CAPTIVEPORTALTYPE" != 'none' ] && [ "$CAPTIVEPORTALTYPE" != 'unknown' ]; then
-					setState 'CAPTIVEPORTALSTATE' 'solved'
-					$INTERACTIVE && echo " $CAPTIVEPORTALTYPE, Solved"
-				else
-					setState 'CAPTIVEPORTALTYPE' 'none'
-					setState 'CAPTIVEPORTALSTATE' 'none'
-					$INTERACTIVE && echo ' None'
-				fi
-
-				if $CAPTIVEPORTALLOGGING; then
-					rm "$CAPTIVEPORTALLOGPATH/CaptivePortal$TIMESTAMP-"*.log
-				fi
-			else
-				# Captive portal present
-				logMessage 'Captive Portal present'
-
-				#LOCATION="$CAPTIVEPORTALDETECTIONURL"
-				getLocationHeader "$BODY" && [ ! -z "$LOCATION" ] &&
-					! $INTERACTIVE && $VERBOSELOGGING && logMessage "Captive Portal location: \"$LOCATION\""
-
-				if $INTERACTIVE && echo -n '.'; [ "$PREVIOUSBSSID" != "$BSSID" ] || [ -z "$CAPTIVEPORTALTYPE" ] ||
-					[ "$CAPTIVEPORTALTYPE" = 'none' ]; then
-					setState 'CAPTIVEPORTALTYPE' 'unknown'
-				fi
-				setState 'CAPTIVEPORTALSTATE' 'present'
-				storeState
-				return 0
-			fi
-		else
-			logError "Interface $INTERFACE not connected"
-			LOCATION=''
-			BODY=''
-			setState 'CAPTIVEPORTALTYPE' 'unknown'
-			setState 'CAPTIVEPORTALSTATE' 'unknown'
-		fi
-
-		storeState
+		checkCaptivePortalPresence &&
+			return 0
 		return 1
 		;;
 esac

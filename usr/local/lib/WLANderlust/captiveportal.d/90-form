@@ -28,9 +28,11 @@ if grep -i -q '<form ' <<< "$BODY"; then
 	#FORMS=`sed 's|\(</form>\)|\1\n|Ig' <<< "$FORMS" | sed -n "s|^.*\(<form [^>]*action=[\"'][^\"']*[\"'][^>]*>.*</form>\)$|\1|Ip"`
 	FORMS=`sed 's|\(</form>\)|\1\n|Ig' <<< "$FORMS" | sed -n 's|^.*\(<form .*</form>\)$|\1|Ip'`
 
+	USERNAME=`getCaptivePortalUsername "$BSSID" "$SSID" "$LOCATION"`
+	PASSWORD=`getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"`
+
 	OIFS="$IFS"
-	IFS='
-'
+	IFS=$'\n'
 	for FORM in $FORMS; do
 		# Get form action
 		FORMACTION=`sed -n "s|^.*<form [^>]*action=[\"']\([^\"']*\)[\"'][^>]*>.*$|\1|Ip" <<< "$FORM"`
@@ -42,10 +44,6 @@ if grep -i -q '<form ' <<< "$BODY"; then
 		if [ ! -z "$ONSUBMIT" ]; then
 			logMessage 'This form uses JavaScript!'
 		fi
-
-		CONTINUE=false
-		INPUTS=`sed 's|>|&\n|g' <<< "$FORM" | sed -n 's|.*\(<input [^>]*>\)$|\1|Ip'`
-		SELECTS=`sed 's|\(</select>\)|\1\n|Ig' <<< "$FORM" | sed -n 's|.*\(<select .*\)$|\1|Ip'`
 
 		TEXTINPUTCOUNTER=0
 		EMPTYTEXTINPUTCOUNTER=0
@@ -59,6 +57,7 @@ if grep -i -q '<form ' <<< "$BODY"; then
 
 		CURLFORMARGUMENTS=''
 		POSTDATA=''
+		INPUTS=`sed 's|>|&\n|g' <<< "$FORM" | sed -n 's|.*\(<input [^>]*>\)$|\1|Ip'`
 		for INPUT in $INPUTS; do
 			INPUTTYPE=`sed -n "s|.* type=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
 			INPUTNAME=`sed -n "s|.* name=[\"']\([^\"']*\)[\"'].*|\1|Ip" <<< "$INPUT"`
@@ -75,6 +74,12 @@ if grep -i -q '<form ' <<< "$BODY"; then
 				if [ -z "$INPUTVALUE" ]; then
 					EMPTYTEXTINPUTCOUNTER=$(($EMPTYTEXTINPUTCOUNTER + 1))
 				fi
+				;;
+			'email')
+				TEXTINPUTCOUNTER=$(($TEXTINPUTCOUNTER + 1))
+				#if [ -z "$INPUTVALUE" ]; then
+				#	
+				#fi
 				;;
 			'password')
 				PASSWORDINPUTCOUNTER=$(($PASSWORDINPUTCOUNTER + 1))
@@ -113,17 +118,17 @@ if grep -i -q '<form ' <<< "$BODY"; then
 			fi
 		done
 
+		SELECTS=`sed 's|\(</select>\)|\1\n|Ig' <<< "$FORM" | sed -n 's|.*\(<select .*\)$|\1|Ip'`
 		for SELECT in $SELECTS; do
 			if grep -i -q "language" <<< "$SELECT"; then
 				logMessage "This seems to be a language select form, we can't login with this one"
-				CONTINUE=true
-				continue
+				continue 2
 			fi
 			OPTIONS=`sed 's|\(</option>\)|\1\n|g' <<< "$SELECT" | sed -n 's|.*\(<option .*</option>\)$|\1|Ip'`
 			SELECTCOUNTER=$(($SELECTCOUNTER + 1))
 		done
 
-		$CONTINUE && continue
+		CAPTIVEPORTALTYPE='form'
 
 		$DEBUGLOGGING && logMessage "TEXTINPUTCOUNTER=$TEXTINPUTCOUNTER EMPTYTEXTINPUTCOUNTER=$EMPTYTEXTINPUTCOUNTER"
 		$DEBUGLOGGING && logMessage "PASSWORDINPUTCOUNTER=$PASSWORDINPUTCOUNTER EMPTYPASSWORDINPUTCOUNTER=$EMPTYPASSWORDINPUTCOUNTER"
@@ -137,13 +142,46 @@ if grep -i -q '<form ' <<< "$BODY"; then
 			curlPost "$FORMACTION" "$POSTDATA"
 			getLocationHeader "$BODY" "$LOCATION"
 			getBody "$LOCATION" true
+
+			# Check if Captive Portal has been resolved
+			if grep -q "$CAPTIVEPORTALDETECTIONRESPONSE" <<< "$BODY"; then
+				# Ok, we were able to authenticate
+				setState 'CAPTIVEPORTALSTATE' 'solved'
+				logMessage 'Captive portal succesfully solved'
+				CAPTIVEPORTALTYPE='continue form'
+				break
+			elif checkCaptivePortalPresence; then
+				logMessage 'Captive portal still present'
+			elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
+				# Ok, we were able to authenticate
+				logMessage 'Captive portal succesfully solved'
+				CAPTIVEPORTALTYPE='continue form'
+				break
+			fi
 		elif [ $TEXTINPUTCOUNTER -eq 0 ] && [ $PASSWORDINPUTCOUNTER -eq 0 ] && [ $EMPTYHIDDENINPUTCOUNTER -eq 0 ] && [ $CHECKBOXINPUTCOUNTER -eq 1 ] && [ $SELECTCOUNTER -eq 0 ] && [ $SUBMITCOUNTER -eq 1 ]; then
 			logMessage "This seems to be some kind of confirm/agree kind of form"
 			curlPost "$FORMACTION" "$POSTDATA"
 			getLocationHeader "$BODY" "$LOCATION"
 			getBody "$LOCATION" true
+
+			# Check if Captive Portal has been resolved
+			if grep -q "$CAPTIVEPORTALDETECTIONRESPONSE" <<< "$BODY"; then
+				# Ok, we were able to authenticate
+				setState 'CAPTIVEPORTALSTATE' 'solved'
+				logMessage 'Captive portal succesfully solved'
+				CAPTIVEPORTALTYPE='conform form'
+				break
+			elif checkCaptivePortalPresence; then
+				logMessage 'Captive portal still present'
+			elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
+				# Ok, we were able to authenticate
+				logMessage 'Captive portal succesfully solved'
+				CAPTIVEPORTALTYPE='conform form'
+				break
+			fi
 		elif [ $TEXTINPUTCOUNTER -eq 0 ] && [ $PASSWORDINPUTCOUNTER -eq 0 ] && [ $HIDDENINPUTCOUNTER -eq 0 ]; then
 			logMessage "This seems to be an empty form, we can't login with this one"
+			CAPTIVEPORTALTYPE='unknown'
 		elif [ $EMPTYTEXTINPUTCOUNTER -ge 1 ] && [ $EMPTYPASSWORDINPUTCOUNTER -ge 1 ]; then
 			logMessage 'This seems to be a typical empty username/password form'
 			CAPTIVEPORTALTYPE='username/password form'
@@ -152,9 +190,9 @@ if grep -i -q '<form ' <<< "$BODY"; then
 		elif [ $EMPTYTEXTINPUTCOUNTER -eq 0 ] && [ $EMPTYPASSWORDINPUTCOUNTER -ge 1 ]; then
 			logMessage 'This seems to be a typical empty password form'
 			CAPTIVEPORTALTYPE='password form'
-			getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"
+			#getCaptivePortalPassword "$BSSID" "$SSID" "$LOCATION"
 			#echo $PASSWORD
-			#recheckCaptivePortal && IFS="$OIFS" && break
+			#checkCaptivePortalPresence && break
 			CAPTIVEPORTALSTATE='failure'
 		elif [ $EMPTYPASSWORDINPUTCOUNTER -eq 0 ] && [ $EMPTYTEXTINPUTCOUNTER -ge 1 ]; then
 			logMessage 'Form based captive portal detected'
@@ -166,10 +204,10 @@ if grep -i -q '<form ' <<< "$BODY"; then
 			logMessage 'Give the following cURL a try:'
 			logMessage "curl $CURLFORMARGUMENTS '$FORMACTION'"
 			LASTLOCATION="$LOCATION"
-			recheckCaptivePortal && IFS="$OIFS" && break
+			checkCaptivePortalPresence && break
 			LOCATION="$LASTLOCATION"
 		fi
-		#ToDo Confirm/agree form
+
 	done
 	IFS="$OIFS"
 fi

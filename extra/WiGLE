@@ -12,9 +12,17 @@
 # tail -n +2 `ls WiGLE-*.log | tail -n 1` | sort -n -r --field-separator=';' -k 23 | awk -F\; '{print $23" "$4" \""$3"\""}'
 
 INTERFACE='wlan1'
+
 VERBOSELOGGING='true'
+AUTOUPLOAD='true'
+DELETEAFTERUPLOAD='false'
+
+WIGLEAPINAME=''
+WIGLEAPITOKEN=''
+
 # Write the log every 5 minutes
 LOGINTERVAL=300
+LOGDIR=~/.WiGLE
 
 # Apparently the iw command is more future and feature proof, however this
 # script currently uses the iwlist command to retrieve the WiFi details
@@ -29,10 +37,14 @@ if [ -f '/etc/hostapd/hostapd.conf' ]; then
 	$VERBOSELOGGING && echo "Your Host AP BSSID: $HOSTAPBSSID"
 fi
 
-LOGFILE=~/WiGLE-`date +%Y%m%d%H`.log
+[ ! -d "$LOGDIR" ] &&
+	mkdir -p "$LOGDIR"
+rm -f "$LOGDIR"/alluploaded
+
+LOGFILE=`date +%Y%m%d%H`.log
 # If there already is a logfile with the same name load it
-[ -f "$LOGFILE" ] &&
-	LOG=`tail -n +2 "$LOGFILE"`
+[ -f "$LOGDIR/$LOGFILE" ] &&
+	LOG=`tail -n +2 "$LOGDIR/$LOGFILE"`
 LASTLOG=`date +%s`
 
 NETWORKCOUNTER=1
@@ -40,6 +52,66 @@ NETWORKCOUNTER=1
 	NETWORKCOUNTER=$((`wc -l <<< "$LOG"` + 1))
 
 while true; do
+	$AUTOUPLOAD && (
+		[ -f "$LOGDIR"/alluploaded ] &&
+			sleep 10 &&
+			exit
+
+		# Check if we have an internet connection
+		if ! route -n | grep -q '^0\.0\.0\.0' ||
+			! ping -q -c 1 -W 1 8.8.8.8 > /dev/null 2>&1 ||
+			! host -t A api.wigle.net > /dev/null; then
+			$VERBOSELOGGING && echo 'No internet connection'
+			# Wait a bit before giving uploading a new try
+			sleep 10
+			exit
+		fi
+
+		[ -f "$LOGDIR"/isuploading ] &&
+			exit
+		touch "$LOGDIR"/isuploading
+
+		# We have an internet connection, let's upload the latest logfiles
+
+		_FILES=`cd "$LOGDIR"; ls [0-9]*.log`
+		# Remove the logfile we're currently logging to from the list
+		echo "Removing $LOGFILE from upload queue"
+		_FILES=`grep -v "$LOGFILE" <<< "$_FILES"`
+		if [ -f "$LOGDIR"/lastuploaded ] &&
+			_LASTUPLOADED=`cat "$LOGDIR"/lastuploaded` &&
+			[ -n "$_LASTUPLOADED" ] &&
+			grep -q "$_LASTUPLOADED" <<< "$_FILES"; then
+			_FILE=`grep -A 1 "$_LASTUPLOADED" <<< "$_FILES" | tail -n +2`
+		else
+			_FILE=`head -n 1 <<< "$_FILES"`
+			echo "_FILE=$_FILE"
+		fi
+
+		if [ -n "$_FILE" ]; then
+			$VERBOSELOGGING && echo "Uploading $_FILE to WiGLE.net"
+			if [ -z "$WIGLEAPINAME" ] || [ -z "$WIGLEAPITOKEN" ]; then
+				# Anonymous upload
+				_RESULT=`curl -4 -m 5 -s -i -F "file=@$LOGDIR/$_FILE" 'https://api.wigle.net/api/v2/file/upload'`
+			else
+				_RESULT=`curl -4 -m 5 -s -i -u "$WIGLEAPINAME:$WIGLEAPITOKEN" -F "file=@$LOGDIR/$_FILE" 'https://api.wigle.net/api/v2/file/upload'`
+			fi
+			if grep -q '"success":true' <<< "$_RESULT"; then
+				$VERBOSELOGGING &&  echo "Uploaded $_FILE to WiGLE.net"
+				#$DELETEAFTERUPLOAD &&
+				#	rm "$LOGDIR/$_FILE"
+			else
+				echo "Failed to upload $_FILE to WiGLE.net"
+				echo "$_FILE" >> "$LOGDIR"/uploadfailed
+			fi
+			echo "$_FILE" > "$LOGDIR"/lastuploaded
+		else
+			$VERBOSELOGGING && echo "No more logfiles to upload"
+			touch "$LOGDIR"/alluploaded
+		fi
+
+		rm "$LOGDIR"/isuploading
+	) &
+
 	# Check if a GPS device is connected
 	_GPSSENTENCE=`gpspipe -n 2 -w | grep -m 1 '"class":"DEVICES"'`
 	_GPSDEVICES=`sed -n 's/.*"devices":\[\([^]]*\)].*/\1/p' <<< "$_GPSSENTENCE"`
@@ -104,9 +176,13 @@ while true; do
 					MODE='infrastructure'
 				elif [ "$MODE" = 'Ad-Hoc' ]; then
 					MODE='ad-hoc'
-				#ToDo "$MODE" = 'Unknown/bug'
+				elif [ "$MODE" = 'Unknown/bug' ]; then
+					# Ignore this BSSID
+					$VERBOSELOGGING && echo "MODE='$MODE' for BSSID $BSSID"
+					continue
 				else
-					echo "MODE=$MODE"
+					echo "MODE='$MODE'"
+					echo "$BSSIDINFO"
 				fi
 
 				ENCRYPTION=`sed -n 's|.*Encryption key:\(.*\)|\1|p' <<< "$BSSIDINFO"`
@@ -197,14 +273,14 @@ while true; do
 	done
 
 	# Create a new logfile on the hour
-	NEWLOGFILE=~/WiGLE-`date +%Y%m%d%H`.log
+	NEWLOGFILE=`date +%Y%m%d%H`.log
 	if [ `date +%s` -ge $(($LASTLOG + $LOGINTERVAL)) ] || [ "$NEWLOGFILE" != "$LOGFILE" ]; then
 		if [ -n "$LOG" ]; then
 			$VERBOSELOGGING && echo "Writing logfile $LOGFILE"
 			# Write the header
-			echo 'Network;NetType;ESSID;BSSID;Info;Channel;Cloaked;Encryption;Decrypted;MaxRate;MaxSeenRate;Beacon;LLC;Data;Crypt;Weak;Total;Carrier;Encoding;FirstTime;LastTime;BestQuality;BestSignal;BestNoise;GPSMinLat;GPSMinLon;GPSMinAlt;GPSMinSpd;GPSMaxLat;GPSMaxLon;GPSMaxAlt;GPSMaxSpd;GPSBestLat;GPSBestLon;GPSBestAlt;DataSize;IPType;IP;' > "$LOGFILE"
+			echo 'Network;NetType;ESSID;BSSID;Info;Channel;Cloaked;Encryption;Decrypted;MaxRate;MaxSeenRate;Beacon;LLC;Data;Crypt;Weak;Total;Carrier;Encoding;FirstTime;LastTime;BestQuality;BestSignal;BestNoise;GPSMinLat;GPSMinLon;GPSMinAlt;GPSMinSpd;GPSMaxLat;GPSMaxLon;GPSMaxAlt;GPSMaxSpd;GPSBestLat;GPSBestLon;GPSBestAlt;DataSize;IPType;IP;' > "$LOGDIR/$LOGFILE"
 			# Sort the log entries on the network counter field
-			sort -n --field-separator=';' -k 1 <<< "$LOG" >> "$LOGFILE"
+			sort -n --field-separator=';' -k 1 <<< "$LOG" >> "$LOGDIR/$LOGFILE"
 		fi
 
 		if [ "$NEWLOGFILE" != "$LOGFILE" ]; then
@@ -212,6 +288,7 @@ while true; do
 			# Reset the log and network counter
 			LOG=''
 			NETWORKCOUNTER=1
+			rm -f "$LOGDIR"/alluploaded
 		fi
 
 		LASTLOG=`date +%s`

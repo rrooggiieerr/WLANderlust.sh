@@ -2,7 +2,7 @@
 #
 # WLANderlust
 #
-# Rogier van Staveren, January 2018, initial release
+# Rogier van Staveren, January 2019, initial release
 
 # Are we root?
 [ "$(id -u)" -eq 0 ] &&
@@ -119,7 +119,10 @@ SHOWPASSWORDS='false'
 
 TIMEOUT='5'
 
-WHATISMYIPURL='https://api.ipify.org'"
+WHATISMYIPURL='https://api.ipify.org'
+
+WIGLEAPINAME=''
+WIGLEAPITOKEN=''"
 
 readConfig()
 {
@@ -200,7 +203,7 @@ DEFAULTGPSFILE="$LOGPATH/WLANderlust.gps"
 [ -z "$LOGFILE" ] && LOGFILE=`getConfigValue 'LOGFILE' "$DEFAULTLOGFILE"`
 [ ! -w "$LOGFILE" ] && [ ! -w `dirname "$LOGFILE"` ] && LOGFILE='/dev/stdout'
 [ -z "$GPSFILE" ] && GPSFILE=`getConfigValue 'GPSFILE' "$DEFAULTGPSFILE"`
-([ ! -w "$GPSFILE" ] || ([ ! -f "$GPSFILE" ] && [ ! -w `dirname "$GPSFILE"` ])) && GPSFILE='/dev/null'
+[ ! -w "$GPSFILE" ] && [ ! -f "$GPSFILE" ] && [ ! -w `dirname "$GPSFILE"` ] && GPSFILE='/dev/null'
 [ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`
 [ -z "$VERBOSELOGGING" ] && VERBOSELOGGING=`getConfigValue 'VERBOSELOGGING'`
 [ -z "$DEBUGLOGGING" ] && DEBUGLOGGING=`getConfigValue 'DEBUGLOGGING'`
@@ -629,6 +632,8 @@ solveCaptivePortal()
 }
 
 # WiFi functions
+[ -z "$WIGLEAPINAME" ] && WIGLEAPINAME=`getConfigValue 'WIGLEAPINAME'`
+[ -z "$WIGLEAPITOKEN" ] && WIGLEAPITOKEN=`getConfigValue 'WIGLEAPITOKEN'`
 getWiFiStatus()
 {
 	PREVIOUSBSSID=`getState 'BSSID'`
@@ -671,6 +676,16 @@ getWiFiStatus()
 		setState 'WPASTATE' ''
 	fi
 
+	#ToDo Calculate distance to Access Point
+	# https://www.linuxjournal.com/magazine/work-shell-calculating-distance-between-two-latitudelongitude-points
+	#if [ -n "$WIGLEAPINAME" ] && [ -n "$WIGLEAPITOKEN" ] && [ -n "$BSSID" ]; then
+	#	_ESCAPEDBSSID=`sed 's|:|%3A|g' <<< "$BSSID"`
+	#	_WIGLERESPONSE=`curl -4 -m 5 -s -i -H 'Accept:application/json' -u "$WIGLEAPINAME:$WIGLEAPITOKEN" "https://api.wigle.net/api/v2/network/detail?netid=$_ESCAPEDBSSID"`
+	#fi
+	#_ESCAPEDBSSID=`sed 's|:||g' <<< "$BSSID"`
+	#_YANDEXRESPONSE=`curl "http://mobile.maps.yandex.net/cellid_location/?clid=1866854&lac=-1&cellid=-1&operatorid=null&countrycode=null&signalstrength=-1&wifinetworks=$_ESCAPEDBSSID:-55&app=ymetro"`
+	#_OPENWIFIRESPONSE=`curl "http://openwifi.su/api/v1/bssids/$_ESCAPEDBSSID"`
+	
 	storeState
 }
 
@@ -1212,23 +1227,38 @@ switchHostAPchannel()
 	return 1
 }
 
+HASGPS='false'
+ISMOVING='false'
 getGPSStatus()
 {
-	LATITUDE=''
-	LONGITUDE=''
-	_GPSSENTENCE=`gpspipe -n 2 -w | grep -m 1 '"DEVICES"'`
+	_GPSSENTENCE=`gpspipe -n 2 -w | grep -m 1 '"class":"DEVICES"'`
 	_GPSDEVICES=`sed -n 's/.*"devices":\[\([^]]*\)].*/\1/p' <<< "$_GPSSENTENCE"`
 	if [ -n "$_GPSDEVICES" ]; then
-		logMessage 'GPS active'
-		_GPSSENTENCE=`timeout $TIMEOUT gpspipe -w | grep -m 1 '"TPV"'`
-		LATITUDE=`sed -n 's/.*"lat":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
-		LONGITUDE=`sed -n 's/.*"lon":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+		HASGPS='true'
+		#logMessage 'GPS active'
+		if _GPSSENTENCE=`timeout $TIMEOUT gpspipe -w | grep -m 1 '"class":"TPV"'`; then
+			LATITUDE=`sed -n 's/.*"lat":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+			LONGITUDE=`sed -n 's/.*"lon":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+			ALTITUDE=`sed -n 's/.*"alt":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+			SPEED=`sed -n 's/.*"speed":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+			[ -n "$SPEED" ] && awk "BEGIN { exit ($SPEED > 0.25) ? 0 : 1 }" &&
+				ISMOVING='true' ||
+				ISMOVING='false'
+		fi
+	else
+		HASGPS='false'
+		LATITUDE=''
+		LONGITUDE=''
+		ALTITUDE=''
+		SPEED='0'
+		ISMOVING='false'
 	fi
 }
 
 showGPSStatus()
 {
-	echo "$LATITUDE,$LONGITUDE"
+	$HASGPS &&
+		echo "Location: $LATITUDE,$LONGITUDE Altitude: $ALTITUDE Speed: $SPEED"
 }
 
 # User interaction

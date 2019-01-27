@@ -1,10 +1,14 @@
 #!/bin/bash
 #
+# WLANderlust
+
+# Check if we are root
 if [ "$(id -u)" -ne 0 ]; then
 	echo 'You should run this installation script as root!'
 	exit 1
 fi
 
+# Handle arguments
 while [ ! -z "$1" ]; do
 	PARAM="$1"
 	case $PARAM in
@@ -25,6 +29,7 @@ if ! `touch '.installWLANderlust.state'`; then
 fi
 
 if [ -z "$INSTALLATIONSTATE" ]; then
+	# Read the instalation status so we can continue where we left
 	INSTALLATIONSTATE=`cat '.installWLANderlust.state'`
 fi
 if [ -z "$INSTALLATIONSTATE" ]; then
@@ -32,6 +37,7 @@ if [ -z "$INSTALLATIONSTATE" ]; then
 	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
 fi
 
+# Check if we are loged in over a remote SSH connection
 ISREMOTELOGIN=`pstree -ps $$ | grep -q ssh && echo true || echo false`
 
 # Introduction

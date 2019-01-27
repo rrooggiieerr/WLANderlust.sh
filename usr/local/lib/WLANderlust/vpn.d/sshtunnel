@@ -189,7 +189,6 @@ case "$1" in
 		return 0
 		;;
 	'STATE')
-		echo "VPNSTATE=$VPNSTATE"
 		if [ "$VPNSTATE" = 'started' ] && [ ! -e "$SSHTUNNELCTRLSOCKET" ]; then
 			setState 'VPNSTATE' 'failure'
 		elif [ "$VPNSTATE" = 'started' ] && ! ssh -4 -S "$SSHTUNNELCTRLSOCKET" -O check "$SSHTUNNELUSERNAME@$VPNSERVERIPADDRESS" 2>&1; then

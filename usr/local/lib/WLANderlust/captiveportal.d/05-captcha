@@ -1,0 +1,28 @@
+# WLANderlust
+#
+# Captive portal detection for captive portals which contain a Captcha
+#
+# https://en.wikipedia.org/wiki/Captive_portal
+#
+# Rogier van Staveren, February 2019, initial release
+
+CAPTIVEPORTALNAME='Contains Captcha'
+HASCONFIG='false'
+
+case "$1" in
+	'CONFIGURE')
+		# No configuration to be done for this type of Captive Portal
+		return 0
+		;;
+	'SOLVE')
+		# Continue with the below implementation
+		;;
+	*)
+		return 1
+		;;
+esac
+
+if grep -i -q 'captcha' <<< "$BODY"; then
+	CAPTIVEPORTALTYPE='Captcha'
+	CAPTIVEPORTALSTATE='failure'
+fi

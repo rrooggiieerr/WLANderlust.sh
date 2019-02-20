@@ -32,6 +32,7 @@ if grep -i -q '<a .*href="' <<< "$BODY"; then
 	IFS=$'\n'
 	for AHREF in $AHREFS; do
 		HREF=`echo "$AHREF" | tr -d '\n\r' | sed 's|.*<a [^>]*href="\([^"]*\)".*</a>.*|\1|'`
+		HREF=`expandLocation "$HREF" "$LOCATION"`
 		$DEBUGLOGGING && logMessage "A HREF detected: \"$HREF\""
 		curlGet "$HREF"
 		getLocationHeader "$BODY" "$LOCATION"

@@ -2,7 +2,7 @@
 #
 # WLANderlust
 #
-# Rogier van Staveren, January 2019, initial release
+# Rogier van Staveren, February 2019, initial release
 
 # Apparently the iw command is more future and feature proof, however this
 # script currently uses the iwlist command to retrieve the WiFi details

@@ -3,6 +3,7 @@
 # WLANderlust
 #
 # Rogier van Staveren, January 2019, initial release
+# Februaty 2019, moved most functions to a seperate core library file
 
 usage()
 {

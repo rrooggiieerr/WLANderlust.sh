@@ -158,6 +158,27 @@ if grep -i -q '<form ' <<< "$BODY"; then
 				CAPTIVEPORTALTYPE='continue form'
 				break
 			fi
+		elif [ $TEXTINPUTCOUNTER -eq 0 ] && [ $PASSWORDINPUTCOUNTER -eq 0 ] && [ $CHECKBOXINPUTCOUNTER -eq 0 ] && [ $SELECTCOUNTER -eq 0 ] && [ $SUBMITCOUNTER -eq 1 ] && [ ${#FORMS[@]} -eq 1 ]; then
+			logMessage "This seems to be some kind of continue/proceed kind of form, but with empty hidden fields and it's the only form on the page"
+			curlPost "$FORMACTION" "$POSTDATA"
+			getLocationHeader "$BODY" "$LOCATION"
+			getBody "$LOCATION" true
+
+			# Check if Captive Portal has been resolved
+			if grep -q "$CAPTIVEPORTALDETECTIONRESPONSE" <<< "$BODY"; then
+				# Ok, we were able to authenticate
+				setState 'CAPTIVEPORTALSTATE' 'solved'
+				logMessage 'Captive portal succesfully solved'
+				CAPTIVEPORTALTYPE='continue form'
+				break
+			elif checkCaptivePortalPresence; then
+				logMessage 'Captive portal still present'
+			elif [ "$CAPTIVEPORTALSTATE" = 'solved' ]; then
+				# Ok, we were able to authenticate
+				logMessage 'Captive portal succesfully solved'
+				CAPTIVEPORTALTYPE='continue form'
+				break
+			fi
 		elif [ $TEXTINPUTCOUNTER -eq 0 ] && [ $PASSWORDINPUTCOUNTER -eq 0 ] && [ $EMPTYHIDDENINPUTCOUNTER -eq 0 ] && [ $CHECKBOXINPUTCOUNTER -eq 1 ] && [ $SELECTCOUNTER -eq 0 ] && [ $SUBMITCOUNTER -eq 1 ]; then
 			logMessage "This seems to be some kind of confirm/agree kind of form"
 			curlPost "$FORMACTION" "$POSTDATA"
@@ -203,6 +224,10 @@ if grep -i -q '<form ' <<< "$BODY"; then
 		else
 			logMessage 'Give the following cURL a try:'
 			logMessage "curl $CURLFORMARGUMENTS '$FORMACTION'"
+			curlPost "$FORMACTION" "$POSTDATA"
+			getLocationHeader "$BODY" "$LOCATION"
+			getBody "$LOCATION" true
+
 			LASTLOCATION="$LOCATION"
 			checkCaptivePortalPresence && break
 			LOCATION="$LASTLOCATION"

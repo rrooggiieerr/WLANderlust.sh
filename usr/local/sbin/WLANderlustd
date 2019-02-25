@@ -1,0 +1,397 @@
+#!/bin/bash
+#
+# WLANderlust
+#
+# Rogier van Staveren, February 2019, initial release
+
+usage()
+{
+	echo -e '\x1B[1mWLANderlust
+\x1B[2mNot all those who WLANder have lost connection\x1B[0m
+
+Usage:
+  -h, --help
+  -i, --interface [interface]
+  -f, --foreground
+  --verbose
+  --debug'
+}
+
+# Handle arguments
+FOREGROUND='false'
+STOPDAEMON='false'
+while [ ! -z "$1" ]; do
+	PARAM=`tr '[:upper:]' '[:lower:]' <<< "$1"`
+	case $PARAM in
+		-h|--help) usage; exit ;;
+		-i|--interface) INTERFACE="$2"; shift ;;
+		-f|--foreground) FOREGROUND='true' ;;
+		--stop) STOPDAEMON='true' ;;
+		--verbose) VERBOSELOGGING='true' ;;
+		--debug) DEBUGLOGGING='true' ;;
+		*)
+			logError "invalid parameter \"$PARAM\""
+			usage
+			exit
+			;;
+	esac
+	shift
+done
+
+MYDIR="${BASH_SOURCE%/*}"
+[[ ! -d "$MYDIR" ]] && MYDIR="$PWD"
+DEFAULTLIBPATH="$(realpath "$MYDIR/../lib/WLANderlust/")"
+[ -z "$LIBPATH" ] && LIBPATH="$DEFAULTLIBPATH"
+
+SCRIPTNAME="$LIBPATH/core"
+. "$SCRIPTNAME"
+SCRIPTNAME="$0"
+
+[ -e "/var/run/WLANderlustd.$INTERFACE.pid" ] &&
+	logError "WLANderlust deamon already active for interface $INTERFACE" &&
+	exit 1
+
+! $ROOT &&
+	logError 'Not root' &&
+	exit 1
+
+isOnlineThread()
+{
+	CAPTIVEPORTALDETECTIONURL=`getConfigValue 'CAPTIVEPORTALDETECTIONURL'`
+	_CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
+
+	rm -f /var/run/isonline
+	while true; do
+		# Check if we have a default route
+		if ! route -n | grep -q '^0\.0\.0\.0'; then
+			$VERBOSELOGGING && logError 'No default route'
+			rm -f /var/run/isonline
+			sleep 0.5
+			continue
+		fi
+		$DEBUGLOGGING && logMessage 'Default route exists'
+
+		# Check if we have a working DNS server
+		if ! host -t A -W $TIMEOUT "$_CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+			$VERBOSELOGGING && logError 'DNS not working'
+			rm -f /var/run/isonline
+			sleep 2
+			continue
+		fi
+		$DEBUGLOGGING && logMessage 'DNS is working'
+
+		# Check if we have a Captive Portal
+		CAPTIVEPORTALDETECTIONRESPONSE=`getConfigValue 'CAPTIVEPORTALDETECTIONRESPONSE'`
+		#if ! curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL" | grep -q "$CAPTIVEPORTALDETECTIONRESPONSE"; then
+		if ! curl -4 -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL" | grep -q "$CAPTIVEPORTALDETECTIONRESPONSE"; then
+			$VERBOSELOGGING && logError 'Captive Portal present'
+			rm -f /var/run/isonline
+			sleep 5
+			continue
+		fi
+		$DEBUGLOGGING && logMessage 'No Captive Portal present'
+
+		# All the checks are past, we seem to be online
+		$VERBOSELOGGING && logMessage "We're online"
+		touch /var/run/isonline
+
+		# Check if we can ping the Google DNS server
+		#while ping -I "$INTERFACE" -q -c 2 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1; do
+		while ping -q -c 2 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1; do
+			#ToDo Do Captive Portal check every N seconds
+			sleep 1
+		done
+		$VERBOSELOGGING && logError "We're offline"
+		rm -f /var/run/isonline
+	done
+}
+
+wifiScanThread()
+{
+	#USEIW=true
+	while true; do
+		#$DEBUGLOGGING && echo 'Timestamp: '`date +%s.%N`
+		if $USEIW; then
+			while ! IWSCAN=`iw dev "$INTERFACE" scan 2> /dev/null`; do
+				sleep 0.5
+			done
+			BSSIDS=`sed -n 's|^BSS \([0-9a-f:]*\).*$|\1|p' <<< "$IWSCAN"`
+		else
+			while ! IWLISTSCAN=`iwlist "$INTERFACE" scan 2> /dev/null`; do
+				sleep 0.5
+			done
+			BSSIDS=`sed -n 's|.* - Address: \([0-9A-F:]*\)|\1|p' <<< "$IWLISTSCAN"`
+		fi
+		# Uppercase BSSIDs
+		BSSIDS="${BSSIDS^^}"
+		# Remove Host AP BSSID
+		[ -n "$HOSTAPBSSID" ] &&
+			BSSIDS=`grep -v "$HOSTAPBSSID" <<< "$BSSIDS"`
+		#$DEBUGLOGGING && echo 'Timestamp: '`date +%s.%N`
+
+		WIFIS=''
+		for BSSID in $BSSIDS; do
+			#$DEBUGLOGGING && echo 'Timestamp: '`date +%s.%N`
+			if $USEIW; then
+				#echo "$IWSCAN"
+				#return
+
+				BSSIDINFO=`grep -A 100 -i "^BSS $BSSID" <<< "$IWSCAN"`
+				tail -n +2 <<< "$BSSIDINFO" | grep -q '^BSS ' &&
+					BSSIDINFO=`grep -m 2 -B 100 '^BSS ' <<< "$BSSIDINFO" | head -n -1`
+				#echo "$BSSIDINFO"
+				CHANNEL=`sed -n 's|.*DS Parameter set: channel \([0-9]*\).*|\1|p' <<< "$BSSIDINFO"`
+				#echo "CHANNEL=$CHANNEL"
+				ESSID=`sed -n 's|.*SSID: \(.*\)|\1|p' <<< "$BSSIDINFO"`
+				#echo "ESSID=$ESSID"
+				SIGNAL=`sed -n 's|.*signal: \(-[0-9.]*\) .*|\1|p' <<< "$BSSIDINFO"`
+				#echo "SIGNAL=$SIGNAL"
+
+				if [ "$ESSID" = '\x00' ]; then
+					# Ignore this BSSID
+					$DEBUGLOGGING && logMessage "$BSSIDINFO"
+					continue
+				fi
+
+				#MODE=`sed -n 's|.*Mode:\(.*\)|\1|p' <<< "$BSSIDINFO"`
+				#if [ "$MODE" != 'Master' ]; then
+				#	# Ignore this BSSID
+				#	$VERBOSELOGGING && logMessage "MODE='$MODE' for BSSID $BSSID"
+				#	continue
+				#fi
+
+				ENCRYPTION=''
+				#grep -q '^	WPS:	 \* Version: 1.0' <<< "$BSSIDINFO" &&
+				#	ENCRYPTION+='WPS'
+				grep -q '^	WPA:	 \* Version: 1' <<< "$BSSIDINFO" &&
+					ENCRYPTION+='WPA'
+				grep -q '^	WPA:	 \* Version: 2' <<< "$BSSIDINFO" &&
+					ENCRYPTION+=',WPA2'
+				#grep -q '^	WMM:	 \* Parameter version 1' <<< "$BSSIDINFO" &&
+				#	ENCRYPTION+=',WMM'
+				grep -q '^	RSN:	 \* Version: 1' <<< "$BSSIDINFO" &&
+					ENCRYPTION+=',RSN'
+				[ -z "$ENCRYPTION" ] &&
+					ENCRYPTION='None'
+				#echo "ENCRYPTION=$ENCRYPTION"
+				#if [ "$ENCRYPTION" != 'None' ]; then
+				#	echo "$BSSIDINFO"
+				#	echo "ENCRYPTION=$ENCRYPTION"
+				#	return
+				#fi
+			else
+				BSSIDINFO=`grep -A 50 " - Address: $BSSID" <<< "$IWLISTSCAN"`
+				tail -n +2 <<< "$BSSIDINFO" | grep -q ' - Address: ' &&
+					BSSIDINFO=`grep -m 2 -B 50 ' - Address: ' <<< "$BSSIDINFO" | head -n -1`
+				#BSSIDINFO=`grep -v " IE: Unknown: " <<< "$BSSIDINFO"`
+				CHANNEL=`sed -n 's|.*Channel:\([0-9]*\)|\1|p' <<< "$BSSIDINFO"`
+				ESSID=`sed -n 's|.*ESSID:"\(.*\)"|\1|p' <<< "$BSSIDINFO"`
+				SIGNAL=`sed -n 's|.*Signal level=\(-[0-9]*\).*|\1|p' <<< "$BSSIDINFO"`
+
+				if [ "$ESSID" = '\x00' ]; then
+					# Ignore this BSSID
+					#$DEBUGLOGGING && logMessage "$BSSIDINFO"
+					continue
+				fi
+
+				MODE=`sed -n 's|.*Mode:\(.*\)|\1|p' <<< "$BSSIDINFO"`
+				if [ "$MODE" != 'Master' ]; then
+					# Ignore this BSSID
+					$VERBOSELOGGING && logMessage "MODE='$MODE' for BSSID $BSSID"
+					continue
+				fi
+
+				ENCRYPTION=`sed -n 's|.*Encryption key:\(.*\)|\1|p' <<< "$BSSIDINFO"`
+				if [ "$ENCRYPTION" = 'off' ]; then
+					ENCRYPTION='None'
+				else
+					_IE=`grep -A 50 ' IE: ' <<< "$BSSIDINFO"`
+					_GROUPCIPHER=`sed -n 's|.*Group Cipher : \(.*\)|\1|p' <<< "$_IE" | uniq`
+					ENCRYPTION="$_GROUPCIPHER"
+					grep -q 'WPA Version 1' <<< "$_IE" &&
+						ENCRYPTION+=',WPA'
+					grep -q 'WPA2 Version 1' <<< "$_IE" &&
+						ENCRYPTION+=',WPA2'
+				fi
+				#$DEBUGLOGGING && [ -z "$ENCRYPTION" ] && echo "$BSSIDINFO"
+
+				#RATES=`grep -o '[0-9]* Mb/s' <<< "$BSSIDINFO" | sed 's| Mb/s||'`
+				#RATES=`sort -n <<< "$RATES"`
+				#MAXRATE=`tail -n 1 <<< "$RATES"`
+				#if [ "$MAXRATE" -le 11 ]; then
+				#	CARRIER='IEEE 802.11b'
+				#elif [ "$MAXRATE" -gt 54 ]; then
+				#	CARRIER='IEEE 802.11b,IEEE 802.11g,IEEE 802.11n'
+				#else
+				#	CARRIER='IEEE 802.11b,IEEE 802.11g'
+				#fi
+			fi
+
+			#[ -f /etc/WLANderlust/BSSID.location.cache ] && 
+			#	_LOCATION=`sed -n "s|^$BSSID,\(.*\)|\1|p" /etc/WLANderlust/BSSID.location.cache`
+			#if [ -z "$_LOCATION" ] && [ -e /var/run/isonline ]; then
+			#	_ESCAPEDBSSID=`sed 's|:||g' <<< "$BSSID"`
+			#	_YANDEXRESPONSE=`curl -4 -m "$TIMEOUT" -s "http://mobile.maps.yandex.net/cellid_location/?clid=1866854&lac=-1&cellid=-1&operatorid=null&countrycode=null&signalstrength=-1&wifinetworks=$_ESCAPEDBSSID:-55"`
+			#	if grep -q '<location ' <<< "$_YANDEXRESPONSE"; then
+			#		_LATITUDE=`sed -n 's|.* latitude="\([0-9.]*\)".*|\1|p'`
+			#		_LONGITUDE=`sed -n 's|.* longitude="\([0-9.]*\)".*|\1|p'`
+			#		_LOCATION="$_LATITUDE,$_LONGITUDE"
+			#	fi
+
+			#	[ -n "$_LOCATION" ] &&
+			#		echo "$BSSID,$_LOCATION" >> /etc/WLANderlust/BSSID.location.cache
+			#fi
+
+			_ENTRY="$BSSID;$CHANNEL;$SIGNAL;$ENCRYPTION;$_LOCATION;$ESSID"
+			# Add entry
+			[ -n "$WIFIS" ] &&
+				WIFIS+=$'\n'
+			WIFIS+="$_ENTRY"
+			#$DEBUGLOGGING && logMessage "$_ENTRY"
+		done
+
+		echo "$WIFIS" > "/var/run/WLANderlust.$INTERFACE.wifis"
+		sleep 1
+	done
+}
+
+rm -f /var/run/ismoving
+gpsThread()
+{
+	while true; do
+		if _GPSSENTENCE=`gpspipe -n 2 -w 2> /dev/null | grep -m 1 '"class":"DEVICES"'` &&
+			_GPSDEVICES=`sed -n 's/.*"devices":\[\([^]]*\)].*/\1/p' <<< "$_GPSSENTENCE"` &&
+			[ -n "$_GPSDEVICES" ]; then
+			if _GPSSENTENCE=`timeout $TIMEOUT gpspipe -w | grep -m 1 '"class":"TPV".*"lat":'`; then
+				SPEED=`sed -n 's/.*"speed":\([0-9.]*\).*/\1/p' <<< "$_GPSSENTENCE"`
+				if [ -n "$SPEED" ] && awk "BEGIN { exit ($SPEED > 0.25) ? 0 : 1 }"; then
+					$VERBOSELOGGING && logMessage "Moving with $SPEED"
+					touch /var/run/ismoving
+				else
+					rm -f /var/run/ismoving
+				fi
+			else
+				rm -f /var/run/ismoving
+			fi
+		else
+			$VERBOSELOGGING && logError 'No GPS device connected'
+			rm -f /var/run/ismoving
+			sleep 15
+		fi
+		sleep 0.5
+	done
+}
+
+reassociateThread()
+{
+	CAPTIVEPORTALDETECTIONURL=`getConfigValue 'CAPTIVEPORTALDETECTIONURL'`
+	_CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
+
+	rm -f /var/run/isonline
+	while true; do
+		# Check if we have a default route
+		if ! route -n | grep -q '^0\.0\.0\.0' && [ ! -e /var/run/ismoving ] && [ -s /var/run/WLANderlust.$INTERFACE.wifis ]; then
+			$DEBUGLOGGING && logMessage 'No default route, not moving and WiFis available'
+			_WIFIS=`sort --field-separator=';' -k 3nr /var/run/WLANderlust.$INTERFACE.wifis`
+
+			# Check if we know any of the WiFis or any of the WiFis is unencrypted and try to connect to them
+			OIFS="$IFS"
+			IFS=$'\n'
+			for _WIFI in $_WIFIS; do
+				#echo "$_WIFI"
+				#BSSID;CHANNEL;SIGNAL;ENCRYPTION;_LOCATION;ESSID
+				_BSSID=`sed 's|^\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_CHANNEL=`sed 's|^[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_ENCRYPTION=`sed 's|^[^;]*;[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_SSID=`sed 's|^.*;\([^;]*\)$|\1|' <<< "$_WIFI"`
+
+				if [ "$_ENCRYPTION" = 'None' ]; then
+					logMessage "Connecting to $_SSID ($_BSSID)"
+					iw dev "$INTERFACE" disconnect
+					iw dev "$INTERFACE" connect -w "$_SSID" "$_BSSID" ||
+						continue
+					sleep 30
+					if ! route -n | grep -q '^0\.0\.0\.0'; then
+						$DEBUGLOGGING && logMessage 'No default route'
+						continue
+					fi
+					$DEBUGLOGGING && logMessage 'Default route exists'
+
+					# Check if we have a working DNS server
+					if ! host -t A -W $TIMEOUT "$_CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+						$VERBOSELOGGING && logError 'DNS not working'
+						continue
+					fi
+					$DEBUGLOGGING && logMessage 'DNS is working'
+
+					# Check if we have a Captive Portal
+					CAPTIVEPORTALDETECTIONRESPONSE=`getConfigValue 'CAPTIVEPORTALDETECTIONRESPONSE'`
+					if ! curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL" | grep -q "$CAPTIVEPORTALDETECTIONRESPONSE"; then
+						$VERBOSELOGGING && logError 'Captive Portal present'
+						/usr/local/bin/WLANderlust -i "$INTERFACE" --solve --restartFirewall
+						if ! curl -4 -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL" | grep -q "$CAPTIVEPORTALDETECTIONRESPONSE"; then
+							$VERBOSELOGGING && logError 'Captive Portal still present'
+							logMessage "Failed to connect to $_SSID ($_BSSID)"
+							continue
+						fi
+					else
+						$DEBUGLOGGING && logMessage 'No Captive Portal present'
+					fi
+
+					# All the checks are past, we seem to be online
+					$VERBOSELOGGING && logMessage "We're online"
+					logMessage "Connected to $_SSID ($_BSSID)"
+					touch /var/run/isonline
+
+					# Check if we can ping the Google DNS server
+					while ping -I "$INTERFACE" -q -c 2 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1; do
+						#ToDo Do Captive Portal check every N seconds
+						sleep 1
+					done
+					$VERBOSELOGGING && logError "We're offline"
+					rm -f /var/run/isonline
+
+					break
+				fi
+			done
+			IFS="$OIFS"
+
+			sleep 1
+		fi
+		sleep 1
+	done
+	return
+}
+
+WLANderlustd()
+{
+	#isOnlineThread &
+	#ISONLINEPID=$!
+	wifiScanThread &
+	WIFISCANPID=$!
+	gpsThread &
+	GPSPID=$!
+	reassociateThread &
+	REASSOCIATEPID=$!
+	wait $ISONLINEPID $WIFISCANPID $GPSPID $REASSOCIATEPID
+}
+
+terminate()
+{
+	logMessage "Terminating WLANderlust daemon for interface $INTERFACE"
+	trap - SIGINT SIGTERM SIGHUP # clear the trap
+	echo kill -- $$ # Sends SIGTERM to child/sub processes
+	echo kill $ISONLINEPID $WIFISCANPID $GPSPID $REASSOCIATEPID
+	kill $ISONLINEPID $WIFISCANPID $GPSPID $REASSOCIATEPID
+	kill -- $$ # Sends SIGTERM to child/sub processes
+	rm -f "/var/run/WLANderlustd.$INTERFACE.pid"
+}
+
+trap terminate SIGINT SIGTERM SIGHUP
+
+if $FOREGROUND; then
+	WLANderlustd
+else
+	WLANderlustd &
+	echo $! > "/var/run/WLANderlustd.$INTERFACE.pid"
+fi

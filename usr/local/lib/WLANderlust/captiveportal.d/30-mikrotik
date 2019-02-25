@@ -41,7 +41,7 @@ if tr -d '\n\r' <<< "$BODY" | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; 
 		AHREF=`sed -n "s|.*<a [^>]*href=['\"]\([^\"]*/login\?[^\"]*\)\".*|\1|p" <<< "$CLEANBODY" | head -n 1`
 		$DEBUGLOGGING && logMessage "AHREF=$AHREF"
 		[ -z "$AHREF" ] &&
-			CAPTIVEPORTALSTATE='failure' &&
+			setState 'CAPTIVEPORTALSTATE' 'failure' &&
 			return 1
 		AHREF=`sed 's|&amp;|\&|g' <<< "$AHREF"`
 		$DEBUGLOGGING && logMessage "AHREF=$AHREF"
@@ -67,7 +67,7 @@ if tr -d '\n\r' <<< "$BODY" | grep -q "function doLogin() {[^}]*hexMD5([^}]*}"; 
 
 	if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
 		logError "No login credentials for \"$BSSID\" \"$SSID\" \"$LOCATION\""
-		CAPTIVEPORTALSTATE='failure'
+		setState 'CAPTIVEPORTALSTATE' 'failure'
 		return 1
 	fi
 

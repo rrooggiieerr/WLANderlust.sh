@@ -6,7 +6,7 @@ case "$1" in
 	'START')
 		if [ ! -z "$HOSTAPINTERFACE" ]; then
 			# Enable masquerading
-			$VERBOSELOGGING && logMessage 'Enable masquerading'
+			$VERBOSELOGGING && logMessage "Enable masquerading on interface $FWINTERFACE"
 			iptables -t nat -A POSTROUTING -o $FWINTERFACE -j MASQUERADE
 		fi
 		return 0

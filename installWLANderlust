@@ -194,7 +194,7 @@ Real Time Clock
 
 ToDo
 
-\e[1mPress Q to quit, S to skip or any other key to configure your Real Time Clock\e[0m'
+\e[1mPress Q to quit, S to skip or any other key to configure your Real Time Clock\e[0m '
 	read -n 1 -s 'CHOICE'
 	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
 	#if [ "$CHOICE" = 's' ] && [ "$CHOICE" = 'S' ]; then
@@ -215,7 +215,7 @@ GPS
 To be able to detect your USB connected GPS you are advised to disconnect the
 device before proceeding.
 
-\e[1mPress Q to quit, S to skip or any other key to configure your GPS\e[0m'
+\e[1mPress Q to quit, S to skip or any other key to configure your GPS\e[0m '
 	read -n 1 -s 'CHOICE'
 	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
 	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
@@ -226,7 +226,7 @@ device before proceeding.
 
 		echo
 		echo
-		echo 'If you're using an USB connected GPS plugin the device NOW and press any key'
+		echo "If you're using an USB connected GPS plugin the device NOW and press any key"
 		read
 		GPSTTY=`ls -tr /dev/ttyUSB* 2> /dev/null | tail -n 1`
 		if [ -n "$GPSTTY" ]; then
@@ -236,6 +236,7 @@ device before proceeding.
 			GPSTTYVENDORID=`sed -n 's/^.*ATTRS{idVendor}=="\([^"]*\)"$/\1/p' <<< "$_UDEVINFO" | head -n 1`
 
 			echo "ACTION==\"add\", KKERNEL==\"ttyUSB?\", ATTRS{idVendor}==\"$GPSTTYVENDORID\", ATTRS{idProduct}==\"$GPSTTYPRODUCTID\", OWNER="gpsd", GROUP="tty", SYMLINK+=\"gps\", TAG+=\"systemd\", ENV{SYSTEMD_WANTS}=\"gpsdctl@%k.service\"" >> /etc/udev/rules.d/61-gpsd.rules
+		fi
 	fi
 	
 	INSTALLATIONSTATE='hostaccesspoint'
@@ -406,7 +407,8 @@ rsn_pairwise=CCMP"
 		# /etc/default/hostapd
 		sed 's|^#\?DAEMON_CONF=.*$|DAEMON_CONF="/etc/hostapd/hostapd.conf"|' -i /etc/default/hostapd
 
-		#ToDo /etc/avahi/avahi-daemon.conf 
+		# /etc/avahi/avahi-daemon.conf 
+		sed "s|^#\?allow-interfaces=.*$|allow-interfaces=$HOSTAPINTERFACE|g" -i /etc/avahi/avahi-daemon.conf
 
 		if $HOSTAPDHASCHANGED && $ISREMOTELOGIN; then
 			echo
@@ -606,6 +608,13 @@ Now it's finally time to install the WLANderlust scripts
 		fi
 		echo
 
+		FILE='usr/local/sbin/WLANderlustd'
+		if [ ! -f "/$FILE" ] || ! diff -q "$FILE" "/$FILE" > /dev/null; then
+			echo "Installing /$FILE"
+			cp --preserve=mode,timestamps "$FILE" "/$FILE"
+		fi
+		echo
+
 		# Copy newer versions of the DHCP hooks
 		echo 'Installing DHCP client hooks'
 		find etc/dhcp/dhclient-*-hooks.d/ -type f -name '[0-9][0-9]-*' -print0 | while IFS= read -r -d '' FILE; do
@@ -705,6 +714,5 @@ echo -e '\e[1mWLANderlust
 Success!
 
 Congratulations, WLANderlust is now successfully installed!'
-exit
 
 #ToDo Create first connection

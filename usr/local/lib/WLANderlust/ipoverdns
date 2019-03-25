@@ -71,11 +71,23 @@ case "$1" in
 
 		logMessage 'Starting IP over DNS tunneling'
 
-		setState 'IPOVERDNSSERVER' `host -t NS "$IODINETOPDOMAIN" | sed -n 's|^.* \([^ ]*\)\.$|\1|p' | head -n 1`
-		$DEBUGLOGGING && logMessage "IPOVERDNSSERVER=$IPOVERDNSSERVER"
+		if _IPOVERDNSSERVER=`host -t NS "$IODINETOPDOMAIN" | sed -n 's|^.* \([^ ]*\)\.$|\1|p' | head -n 1` &&
+			[ -n "$_IPOVERDNSSERVER" ]; then
+			setState 'IPOVERDNSSERVER' "$_IPOVERDNSSERVER"
+			$DEBUGLOGGING && logMessage "IPOVERDNSSERVER=$IPOVERDNSSERVER"
+		else
+			logError 'IP over DNS server host name could not be resolved'
+			return 1
+		fi
 
-		setState 'IPOVERDNSSERVERIPADDRESS' `host -t A "$IPOVERDNSSERVER" | awk '{print $4}' | head -n 1`
-		$DEBUGLOGGING && logMessage "IPOVERDNSSERVERIPADDRESS=$IPOVERDNSSERVERIPADDRESS"
+		if _IPOVERDNSSERVERIPADDRESS=`host -t A "$IPOVERDNSSERVER" | awk '{print $4}' | head -n 1` &&
+			[ -n "$_IPOVERDNSSERVERIPADDRESS" ]; then
+			setState 'IPOVERDNSSERVERIPADDRESS' `host -t A "$IPOVERDNSSERVER" | awk '{print $4}' | head -n 1`
+			$DEBUGLOGGING && logMessage "IPOVERDNSSERVERIPADDRESS=$IPOVERDNSSERVERIPADDRESS"
+		else
+			logError 'IP over DNS server IP address could not be resolved'
+			return 1
+		fi
 
 		if DNSSERVERIPADDRESS=`sed -n 's|^nameserver *\([^ ]*\)$|\1|p' /var/run/dnsmasq/resolv.conf | tail -n 1` &&
 			[ ! -z "$DNSSERVERIPADDRESS" ] &&
@@ -142,7 +154,10 @@ case "$1" in
 		setState 'IPOVERDNSINTERFACE' `sed -n 's|^Opened \([a-z0-9]*\)$|\1|p' <<< "$IODINEOUTPUT"`
 		setState 'IPOVERDNSIPADDRESS' `sed -n 's|^Setting IP of [a-z0-9]* to \([0-9\.]*\)$|\1|p' <<< "$IODINEOUTPUT"`
 		setState 'IPOVERDNSGATEWAY' `sed -n 's|^Server tunnel IP is \([0-9\.]*\)$|\1|p' <<< "$IODINEOUTPUT"`
-		setState 'IPOVERDNSSERVERIPADDRESS' `sed -n 's|^Server is at \([0-9.]*\), .*$|\1|p' <<< "$IODINEOUTPUT"`
+		_IPOVERDNSSERVERIPADDRESS=`sed -n 's|^Server is at \([0-9.]*\), .*$|\1|p' <<< "$IODINEOUTPUT"`
+		$DEBUGLOGGING && logMessage "_IPOVERDNSSERVERIPADDRESS=$_IPOVERDNSSERVERIPADDRESS"
+		[ -n "$_IPOVERDNSSERVERIPADDRESS" ] &&
+			setState 'IPOVERDNSSERVERIPADDRESS' "$_IPOVERDNSSERVERIPADDRESS"
 		$DEBUGLOGGING && logMessage "IPOVERDNSSERVERIPADDRESS=$IPOVERDNSSERVERIPADDRESS"
 		grep -q '^Server is at [0-9.]*, trying raw login: OK$' <<< "$IODINEOUTPUT" &&
 			setState 'IPOVERDNSMODE' 'raw' ||
@@ -153,11 +168,10 @@ case "$1" in
 		# This is just paranoia
 		[ -z "$IPOVERDNSIPADDRESS" ] &&
 			setState 'IPOVERDNSIPADDRESS' `sed -n 's|.*inet \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
-		setState 'IPOVERDNSIPADDRESS' "$IPOVERDNSIPADDRESS"
 		setState 'IPOVERDNSNETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
 		# This is just paranoia
-		[ -z "$IPOVERDNSGATEWAY" ] &&
-			setState 'IPOVERDNSGATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $IPOVERDNSINTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
+		#[ -z "$IPOVERDNSGATEWAY" ] &&
+		#	setState 'IPOVERDNSGATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $IPOVERDNSINTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
 
 		# Check if the remote end of the VPN can be reached
 		if ! ping -I "$IPOVERDNSINTERFACE" -q -c 1 -W "$TIMEOUT" "$IPOVERDNSGATEWAY" > /dev/null 2>&1; then
@@ -175,12 +189,12 @@ case "$1" in
 		done ) &
 
 		if [ ! -z "$GATEWAY" ]; then
-			[ "$IPOVERDNSMODE" = 'raw' ] &&
+			#[ "$IPOVERDNSMODE" = 'raw' ] &&
 				ip route add "$IPOVERDNSSERVERIPADDRESS" via "$GATEWAY"
 
 			# Route DNS servers
 			for DNSSERVERIPADDRESS in `sed -n 's|^nameserver *\([^ ]*\)$|\1|p' /var/run/dnsmasq/resolv.conf`; do
-				[ "$DNSSERVERIPADDRESS" != "$GATEWAY" ] &&
+				#[ "$DNSSERVERIPADDRESS" != "$GATEWAY" ] &&
 					ip route add "$DNSSERVERIPADDRESS" via "$GATEWAY"
 			done
 		fi

@@ -39,6 +39,7 @@ fi
 
 # Check if we are loged in over a remote SSH connection
 ISREMOTELOGIN=`pstree -ps $$ | grep -q ssh && echo true || echo false`
+IPADDRESS=`ifconfig wlan0 | sed -n 's|^.*inet \([0-9.]*\) .*$|\1|p'`
 
 # Introduction
 if [ "$INSTALLATIONSTATE" = 'introduction' ]; then
@@ -179,28 +180,170 @@ ToDo
 		sleep 2
 	fi
 
-	INSTALLATIONSTATE='hostaccesspoint'
-	#ToDo INSTALLATIONSTATE='rtc'
+	INSTALLATIONSTATE='rtc-i2c'
 	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
 fi
 
-# Real Time Clock
-if [ "$INSTALLATIONSTATE" = 'rtc' ]; then
+# Real Time Clock I2C
+if [ "$INSTALLATIONSTATE" = 'rtc-i2c' ] && [ -e /dev/i2c-1 ]; then
+	I2CDETECT_RESPONSE=`i2cdetect -y 1 0x68 0x68`
+	if grep -q ' 68 ' <<< "$I2CDETECT_RESPONSE"; then
+		INSTALLATIONSTATE='rtc-driver'
+		echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+	elif grep -q ' UU ' <<< "$I2CDETECT_RESPONSE"; then
+		INSTALLATIONSTATE='hostaccesspoint'
+		echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+	fi
+fi
+
+if [ "$INSTALLATIONSTATE" = 'rtc-i2c' ]; then
 	clear
 	echo -n -e '\e[1mWLANderlust
 \e[2mNot all those who WLANder have lost connection
 \e[0m
-Real Time Clock
+Real Time Clock configuration
+
+ToDo: Describe the Real Time CLock
+
+Configuring your Real Time Clock involves a couple of steps including restarting
+your Raspberry Pi a couple of times.
+
+If you have no Real Time Clock installed you can safely skip these steps.
+
+We first need to enable I2C on your Raspberry Pi.
+
+\e[1mPress Q to quit, S to skip or any other key to configure your Real Time Clock\e[0m '
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		echo 'Installing I2C packages'
+		apt-get install -y i2c-tools
+
+		if ! grep -q 'i2c-dev' /etc/modules; then
+			echo 'i2c-dev' >> /etc/modules
+		fi
+
+		if grep -q '#\?dtparam=i2c_arm=' /boot/config.txt; then
+			sed 's|^#\?dtparam=i2c_arm=.*$|dtparam=i2c_arm=on|' -i /boot/config.txt
+		fi
+
+		echo
+		# Just wait a bit to show the result
+		sleep 2
+
+		clear
+		echo -n -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Real Time Clock I2C configuration
+
+I2C is now configured. You need to restart your Rasperry Pi and
+continue the installation by executing the installation script again. The
+script will recognise where it has stopped and continue with the next step.
+'
+		if $ISREMOTELOGIN; then
+			echo -n -e "
+Reconnect to your Raspberri Pi using the following command:
+ ssh pi@$IPADDRESS
+"
+		fi
+		echo -n -e '
+\e[1mPress Q to quit or any other key to restart your device\e[0m '
+		read -n 1 -s 'CHOICE'
+		([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+		INSTALLATIONSTATE='rtc-driver'
+		echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+		reboot
+	fi
+
+	INSTALLATIONSTATE='hostaccesspoint'
+	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+fi
+
+if [ "$INSTALLATIONSTATE" = 'rtc-driver' ]; then
+	clear
+	echo -n -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Real Time Clock driver configuration
 
 ToDo
 
 \e[1mPress Q to quit, S to skip or any other key to configure your Real Time Clock\e[0m '
 	read -n 1 -s 'CHOICE'
 	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
-	#if [ "$CHOICE" = 's' ] && [ "$CHOICE" = 'S' ]; then
-	#fi
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		I2CDETECT_RESPONSE=`i2cdetect -y 1 0x68 0x68`
+		# Detect DS1307, DS3231 and PCF85231 RTC Chips
+		if grep -q ' 68 ' <<< "$I2CDETECT_RESPONSE"; then
+			#ToDo How to detect which device is used?
+			#echo 'dtoverlay=i2c-rtc,ds1307' >> /boot/config.txt
+			#echo 'dtoverlay=i2c-rtc,pcf8523' >> /boot/config.txt
+			echo 'dtoverlay=i2c-rtc,ds3231' >> /boot/config.txt
 
-	INSTALLATIONSTATE='gps'
+			echo
+			# Just wait a bit to show the result
+			sleep 2
+
+			clear
+			echo -n -e "\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Real Time Clock driver configuration
+
+Your Real Time Clock driver is now configured. You need to restart your Rasperry Pi and
+continue the installation by executing the installation script again. The
+script will recognise where it has stopped and continue with the next step.
+
+\e[1mPress Q to quit or any other key to restart your device\e[0m "
+			read -n 1 -s 'CHOICE'
+			([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+
+			INSTALLATIONSTATE='rtc'
+			echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+			reboot
+		elif grep -q ' UU ' <<< "$I2CDETECT_RESPONSE"; then
+			# Driver is already installed
+			INSTALLATIONSTATE='rtc'
+			echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+		fi
+	else
+		INSTALLATIONSTATE='hostaccesspoint'
+		#ToDo INSTALLATIONSTATE='gps'
+		echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
+	fi
+fi
+
+if [ "$INSTALLATIONSTATE" = 'rtc' ]; then
+	clear
+	echo -n -e '\e[1mWLANderlust
+\e[2mNot all those who WLANder have lost connection
+\e[0m
+Real Time Clock configuration
+
+ToDo
+
+\e[1mPress Q to quit, S to skip or any other key to configure your Real Time Clock\e[0m '
+	read -n 1 -s 'CHOICE'
+	([ "$CHOICE" = 'q' ] || [ "$CHOICE" = 'Q' ]) && echo && exit
+	if [ "$CHOICE" != 's' ] && [ "$CHOICE" != 'S' ]; then
+		#ToDo Check if we have a network connection and if the current time is set using NTP
+		hwclock -w
+
+		# Disable the fake hardware clock script and enable the RTC script
+		update-rc.d -f fake-hwclock disable
+		update-rc.d -f hwclock.sh enable
+
+		# Incase we want to remove the fake hardware clock all together
+		#apt-get -y remove fake-hwclock
+		#update-rc.d -f fake-hwclock remove
+
+		#ToDo Edit /lib/udev/hwclock-set
+	fi
+
+	INSTALLATIONSTATE='hostaccesspoint'
+	#ToDo INSTALLATIONSTATE='gps'
 	echo "$INSTALLATIONSTATE" > '.installWLANderlust.state'
 fi
 
@@ -392,7 +535,9 @@ wpa=2
 wpa_passphrase=$HOSTAPPASSPHRASE
 wpa_key_mgmt=WPA-PSK
 wpa_pairwise=TKIP
-rsn_pairwise=CCMP"
+rsn_pairwise=CCMP
+ctrl_interface=/var/run/hostapd
+ctrl_interface_group=0"
 		fi
 		# Check if HOSTAPDCONF and /etc/hotapd/hostapd.conf differ
 		HOSTAPDHASCHANGED='false'

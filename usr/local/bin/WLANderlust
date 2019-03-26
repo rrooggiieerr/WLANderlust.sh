@@ -61,7 +61,7 @@ SWITCHHOSTAPCHANNEL='false'
 APPEND2WPASUPPLICANT='false'
 STATUS='false'
 while [ ! -z "$1" ]; do
-	PARAM=`tr '[:upper:]' '[:lower:]' <<< "$1"`
+	PARAM="${1,,}"
 	# Are we root?
 	if [ "$(id -u)" -eq 0 ]; then
 		case $PARAM in
@@ -147,25 +147,7 @@ elif [ -z "$INTERFACE" ]; then
 	fi
 fi
 
-if ! IFCONFIG=`ifconfig "$INTERFACE" 2> /dev/null`; then
-	logError "Interface $INTERFACE does not exist"
-	exit 1
-fi
-
-grep -q '<UP' <<< "$IFCONFIG" &&
-	INTERFACEISUP='true' ||
-	INTERFACEISUP='false'
-$DEBUGLOGGING && $INTERFACEISUP && logMessage "Interface $INTERFACE is up"
-$DEBUGLOGGING && ! $INTERFACEISUP && logMessage "Interface $INTERFACE is down"
-
-ISWIFIINTERFACE='false'
-[ "`uname`" = 'Linux' ] && grep -q '^wlan[0-9]*$' <<< "$INTERFACE" && ISWIFIINTERFACE='true'
-[ "`uname`" = 'Darwin' ]  &&
-	networksetup -listallhardwareports | grep -B 1 "^Device: $INTERFACE" | grep -q "Hardware Port: Wi-Fi" &&
-	ISWIFIINTERFACE='true'
-$VERBOSELOGGING && $ISWIFIINTERFACE && logMessage "Using WiFi interface $INTERFACE"
-$VERBOSELOGGING && ! $ISWIFIINTERFACE && logMessage "Using non-WiFi interface $INTERFACE"
-IPADDRESS=`ifconfig "$INTERFACE" | sed -n 's|.*inet \([^ ]*\) .*|\1|p'`
+setInterface "$INTERFACE"
 
 if $ROOT; then
 	[ -z "$INTERFACE" ] &&
@@ -346,20 +328,30 @@ WLANderlustMenu()
 			$ISWIFIINTERFACE &&
 			([ "$WPASTATE" != 'COMPLETED' ] || [ -z "$EXTERNALIPADDRESS" ]) &&
 			SCANFORNETWORKS='true'
-		$SCANFORNETWORKS &&
-			scanForNetworks &&
-			echo
-		if $SCANFORNETWORKS && [ ! -z "$WIFIINFO" ]; then
-			mapfile -t SSIDS < <(sed -n 's|^  ESSID:"\(.*\)"|\1|p' <<<  "$WIFIINFO" | sort -bf | uniq)
-			for I in ${!SSIDS[@]}; do
-				_SSID=${SSIDS[$I]}
-				SSIDINFO=`fgrep -B 5 "ESSID:\"$_SSID\"" <<< "$WIFIINFO"`
-				_CHANNEL=`sed -n 's|^  Channel:||p' <<< "$SSIDINFO" | head -n 1`
+		#		#for FILE in `ls /home/pi/Instabridge/*.dib`; do
+		#		# sqlite3 $FILE 'select "'$FILE'", `ssid`, quote(`security.password`), `location.latitude`, `location.longitude` from hotspots where `ssid` like "'"$_SSID"'" COLLATE NOCASE'
+		#		#done
+		if $SCANFORNETWORKS && [ -s /var/run/WLANderlust.$INTERFACE.wifis ]; then
+			[ "$ORDER" = 'A' ] &&
+				mapfile -t _WIFIS < <(grep -v ';$' /var/run/WLANderlust.$INTERFACE.wifis | sort --field-separator=';' -k 6df) ||
+				mapfile -t _WIFIS < <(grep -v ';$' /var/run/WLANderlust.$INTERFACE.wifis | sort --field-separator=';' -k 3nr)
+			_WPANETWORKS=`wpa_cli -i "$INTERFACE" list_networks`
+			for I in ${!_WIFIS[@]}; do
+				_WIFI=${_WIFIS[$I]}
+				#BSSID;CHANNEL;SIGNAL;ENCRYPTION;_LOCATION;ESSID
+				_BSSID=`sed 's|^\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_CHANNEL=`sed 's|^[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_SIGNAL=`sed 's|^[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_LOCATION=`sed 's|^[^;]*;[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_ENCRYPTION=`sed 's|^[^;]*;[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+				_SSID=`sed 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;\(.*\)$|\1|' <<< "$_WIFI"`
 				# Calculate signal quality
-				QUALITY=$(( 100 * `echo "$SSIDINFO" | grep "^  Quality=" | sed 's|.*Quality=\([0-9]*/[0-9]*\)  Signal level=-[0-9]* dBm.*|\1|' | sort | tail -n 1` ))
+				#_QUALITY=$(( 100 * $_SIGNAL))
+				#_QUALITY=0
+				#echo "$_QUALITY"
 
 				#
-				if [ "$WPASTATE" = 'COMPLETED' ] && [ "$_SSID" = "$SSID" ]; then
+				if [ "$WPASTATE" = 'COMPLETED' ] && [ "$_BSSID" = "$BSSID" ]; then
 					echo -n "✔︎"
 				else
 					echo -n ' '
@@ -368,20 +360,23 @@ WLANderlustMenu()
 				printf '\x1B[1m%2d\x1B[0m' $I
 
 				# Print a floppy character if the SSID is already configured in the WPA supplicant configuration
-				grep -q "^\sssid=\"$_SSID\"" "$WPASUPPLICANTCONF" &&
-					echo -n "💾" ||
-					echo -n ' '
+				if [ -n "$_SSID" ] &&
+					(grep -q "^[0-9]*"$'\t'".*"$'\t'"$_BSSID"$'\t' <<< "$_WPANETWORKS" || grep -q "^[0-9]*"$'\t'"$_SSID"$'\t'"any"$'\t' <<< "$_WPANETWORKS"); then
+					echo -n "💾 "
+				else
+					echo -n '  '
+				fi
+
+				#grep -q "^\sssid=\"$_SSID\"" "$WPASUPPLICANTCONF" &&
+				#	echo -n "💾 " ||
+				#	echo -n '  '
 
 				# Print a lock character if encryption is on
-				grep -q "^  Encryption key:on$" <<< "$SSIDINFO" &&
-					echo -n "🔒" ||
-					echo -n ' '
+				[ "$_ENCRYPTION" != "None" ] &&
+					echo -n "🔒 " ||
+					echo -n '  '
 
-				#for FILE in `ls /home/pi/Instabridge/*.dib`; do
-				# sqlite3 $FILE 'select "'$FILE'", `ssid`, quote(`security.password`), `location.latitude`, `location.longitude` from hotspots where `ssid` like "'"$_SSID"'" COLLATE NOCASE'
-				#done
-
-				printf '%3d%% %2d "%s"' $QUALITY $_CHANNEL "$_SSID"
+				printf '%3d dBm %2d (%s) "%b"' "$_SIGNAL" "$_CHANNEL" "$_BSSID" "$_SSID"
 
 				echo
 			done
@@ -392,6 +387,9 @@ WLANderlustMenu()
 		$SCANFORNETWORKS &&
 			echo -e '  \x1B[1mW\x1B[0m Stop scanning for W\x1B[0miFi networks' ||
 			echo -e '  \x1B[1mW\x1B[0m Scan for \x1B[1mW\x1B[0miFi networks'
+		($SCANFORNETWORKS && [ "$ORDER" = 'A' ]) &&
+			echo -e '  \x1B[1mO\x1B[0m \x1B[1mO\x1B[0mrder WiFi networks by signal strength' ||
+			echo -e '  \x1B[1mO\x1B[0m \x1B[1mO\x1B[0mrder WiFi networks alphabetically'
 		$SCANFORNETWORKS &&
 			[ "$WPASTATE" = 'COMPLETED' ] &&
 			echo -e "  \x1B[1mA\x1B[0m Re\x1B[1ma\x1B[0mssociate interface $INTERFACE"
@@ -429,6 +427,11 @@ WLANderlustMenu()
 						SCANFORNETWORKS='false' ||
 						SCANFORNETWORKS='true'
 					;;
+				O|o)
+					[ "$ORDER" = 'A' ] &&
+						ORDER='S' ||
+						ORDER='A'
+					;;
 				A|a)
 					reassociateInterface
 					;;
@@ -460,7 +463,7 @@ WLANderlustMenu()
 						startFirewall
 					fi
 					;;
-				Q|q|X|x) exit ;;
+				Q|q|X|x) return ;;
 				C|c)
 					WLANderlustConfigurationMenu
 					;;
@@ -469,12 +472,74 @@ WLANderlustMenu()
 					;;
 				'') ;;
 				*)
-					if $SCANFORNETWORKS && echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${SSIDS[$REPLY]}" ]; then
+					if $SCANFORNETWORKS && echo -n "$REPLY" | egrep -q "^[0-9]+$" && [ ! -z "${_WIFIS[$REPLY]}" ]; then
 						echo
-						_SSID="${SSIDS[$REPLY]}"
+						_WIFI="${_WIFIS[$REPLY]}"
+						_BSSID=`sed 's|^\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+						_ENCRYPTION=`sed 's|^[^;]*;[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+						_SSID=`sed 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;\(.*\)$|\1|' <<< "$_WIFI"`
+
+						echo "BSSID: $_BSSID"
 						echo "SSID: $_SSID"
-						SSIDINFO=`echo -n "$WIFIINFO" | fgrep -B 5 "  ESSID:\"$_SSID\""`
-						configureWiFi "$_SSID" "$SSIDINFO"
+						if _NETWORKID=`sed -n "s|^\([0-9]*\)\t[^\t]*\t$_BSSID\t.*|\1|p" <<< "$_WPANETWORKS"` && [ -z "$_NETWORKID" ]; then
+							if [ -n "$_SSID" ]; then
+								_NETWORKID=`sed -n "s|^\([0-9]*\)\t$_SSID\tany\t.*|\1|p" <<< "$_WPANETWORKS"` && [ -n "$_NETWORKID" ]
+							fi
+						fi
+						if [ -n "$_NETWORKID" ] && [ "$_ENCRYPTION" = "None" ]; then
+							echo -n 'Connect/Delete? (C/D) '
+						elif [ -n "$_NETWORKID" ]; then
+							echo -n 'Connect/Update password/Delete? (C/U/D) '
+						else
+							echo -n 'Connect? (C) '
+						fi
+						read -r -n 1 CHOICE
+						echo
+						case "$CHOICE" in
+							C|c)
+								if [ -n "$_NETWORKID" ]; then
+									wpa_cli -i "$INTERFACE" enable "$_NETWORKID"
+									wpa_cli -i "$INTERFACE" select_network "$_NETWORKID"
+								elif [ "$_ENCRYPTION" = "None" ]; then
+									wpa_cli -i "$INTERFACE" enable 0
+									iw dev "$INTERFACE" disconnect
+									if true; then
+										echo "iw dev \"$INTERFACE\" connect -w \"$_SSID\""
+										_OUTPUT=`timeout 30 iw dev "$INTERFACE" connect -w "$_SSID"`
+									else
+										echo "iw dev \"$INTERFACE\" connect -w \"$_SSID\" \"$_BSSID\""
+										_OUTPUT=`timeout 30 iw dev "$INTERFACE" connect -w "$_SSID" "$_BSSID"`
+									fi
+									echo "$_OUTPUT"
+									if ! grep -q ": connected to $_BSSID" <<< "$_OUTPUT"; then
+										logError "Failed to connect to $_SSID ($_BSSID): $_OUTPUT"
+									else
+										logMessage "Succesfully connected to $_SSID ($_BSSID)"
+									fi
+								else
+									configureWiFi "$_SSID" "$_BSSID" "$_ENCRYPTION"
+								fi
+							;;
+							U|u)
+								if [ -n "$_NETWORKID" ] && [ "$_ENCRYPTION" != "None" ]; then
+									echo 'Not yet implemented'
+								else
+									echo -en '\t\x1B[1m\x1B[31mInvalid input\x1B[0m\r'
+								fi
+							;;
+							D|d)
+								if [ -n "$_NETWORKID" ]; then
+									logMessage "Removing \"$_SSID\" ($_BSSID) from configuration"
+									wpa_cli -i "$INTERFACE" remove_network "$_NETWORKID"
+									wpa_cli -i "$INTERFACE" save_config
+								else
+									echo -en '\t\x1B[1m\x1B[31mInvalid input\x1B[0m\r'
+								fi
+							;;
+							*)
+								echo -en '\t\x1B[1m\x1B[31mInvalid input\x1B[0m\r'
+							;;
+						esac
 					else
 						echo -en '\t\x1B[1m\x1B[31mInvalid input\x1B[0m\r'
 					fi
@@ -485,9 +550,16 @@ WLANderlustMenu()
 	done
 }
 
+if [ -f "/var/run/WLANderlust.$INTERFACE.pid" ]; then
+	logMessage "CLI is already active for interface $INTERFACE"
+	exit 1
+fi
+
 if $INTERACTIVE && ! $STATUS; then
 	if $ROOT; then
+		touch "/var/run/WLANderlust.$INTERFACE.pid"
 		WLANderlustMenu
+		rm "/var/run/WLANderlust.$INTERFACE.pid"
 	else
 		getWiFiStatus
 		getNetworkStatus

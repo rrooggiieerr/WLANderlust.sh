@@ -37,7 +37,12 @@ fi
 [ -z "$CAPTIVEPORTALLOGPATH" ] && CAPTIVEPORTALLOGPATH=`getConfigValue 'CAPTIVEPORTALLOGPATH'`
 "$CAPTIVEPORTALLOGGING" && [ ! -d "$CAPTIVEPORTALLOGPATH" ] && mkdir -p "$CAPTIVEPORTALLOGPATH"
 [ -z "$CAPTIVEPORTALDETECTIONURL" ] && CAPTIVEPORTALDETECTIONURL=`getConfigValue 'CAPTIVEPORTALDETECTIONURL'`
+# Derive the Captive Portal detection hostname from the Captive Portal detection URL
+CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
 [ -z "$CAPTIVEPORTALDETECTIONRESPONSE" ] && CAPTIVEPORTALDETECTIONRESPONSE=`getConfigValue 'CAPTIVEPORTALDETECTIONRESPONSE'`
+
+[ -z "$1" ] &&
+	return
 
 # The Captive Portal password list has the following format:
 # YYYYMMDDhhmmss;BSSID;"SSID";"domain";latitude;longitude;share;"username";"password"
@@ -219,11 +224,10 @@ checkCaptivePortalPresence()
 
 	$INTERACTIVE && echo -n 'Detecting Captive Portal'
 
-	_CAPTIVEPORTALDETECTIONHOSTNAME=`sed 's|^.*//\([^/]*\).*$|\1|' <<< "$CAPTIVEPORTALDETECTIONURL"`
 	$INTERACTIVE && echo -n '.'
-	if ! host -t A -W $TIMEOUT "$_CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+	if ! host -t A -W $TIMEOUT "$CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
 		$INTERACTIVE && echo -n ' '
-		logError "Captive portal detection hostname $_CAPTIVEPORTALDETECTIONHOSTNAME could not be resolved"
+		logError "Captive portal detection hostname $CAPTIVEPORTALDETECTIONHOSTNAME could not be resolved"
 		if [ "$PREVIOUSBSSID" != "$BSSID" ]; then
 			setState 'CAPTIVEPORTALSTATE' 'failure'
 		fi

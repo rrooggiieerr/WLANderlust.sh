@@ -550,16 +550,33 @@ WLANderlustMenu()
 	done
 }
 
-if [ -f "/var/run/WLANderlust.$INTERFACE.pid" ]; then
+PIDFILE="/var/run/WLANderlust.$INTERFACE.pid"
+if [ -f "$PIDFILE" ]; then
 	logMessage "CLI is already active for interface $INTERFACE"
 	exit 1
 fi
 
 if $INTERACTIVE && ! $STATUS; then
 	if $ROOT; then
-		touch "/var/run/WLANderlust.$INTERFACE.pid"
+		interrupt()
+		{
+			logMessage "Terminating WLANderlust for interface $INTERFACE"
+
+			# Clear the trap
+			trap - SIGINT
+
+			# Remove the PID file
+			rm -f "$PIDFILE"
+
+			exit
+		}
+
+		trap interrupt SIGINT
+
+		echo $$ > "$PIDFILE"
+		$DEBUGLOGGING && logMessage "WLANderlust PID: "`cat "$PIDFILE"`
 		WLANderlustMenu
-		rm "/var/run/WLANderlust.$INTERFACE.pid"
+		rm "$PIDFILE"
 	else
 		getWiFiStatus
 		getNetworkStatus

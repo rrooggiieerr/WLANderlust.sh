@@ -61,7 +61,8 @@ LOGFILE=''
 GPSFILE=''
 
 AUTOSWITCHHOSTAPCHANNEL='false'
-AUTOREASSOCIATE='false
+AUTOREASSOCIATE='false'
+REASSOCIATEINTERVAL='120'
 
 VERBOSELOGGING='false'
 DEBUGLOGGING='false'
@@ -159,12 +160,17 @@ DEFAULTGPSFILE="$LOGPATH/WLANderlust.gps"
 [ -z "$TIMEOUT" ] && TIMEOUT=`getConfigValue 'TIMEOUT'`
 [ -z "$WHATISMYIPURL" ] && WHATISMYIPURL=`getConfigValue 'WHATISMYIPURL'`
 
-# Are we in interactive mode?
-[[ -t 1 || -p /dev/stdin ]] &&
-	INTERACTIVE='true' ||
-	INTERACTIVE='false'
+[ -z "$AUTOREASSOCIATE" ] && AUTOREASSOCIATE=`getConfigValue 'AUTOREASSOCIATE'`
+[ -z "$REASSOCIATEINTERVAL" ] && REASSOCIATEINTERVAL=`getConfigValue 'REASSOCIATEINTERVAL'`
 
-TIMESTAMP=`date +%Y%m%d%H%M%S`
+if [ -z "$INTERACTIVE" ]; then
+	# Are we in interactive mode?
+	[[ -t 1 || -p /dev/stdin ]] &&
+		INTERACTIVE='true' ||
+		INTERACTIVE='false'
+fi
+
+[ -z "$TIMESTAMP" ] && TIMESTAMP=`date +%Y%m%d%H%M%S`
 
 # Get the Host AP interface, SSID and channel
 if [ -f '/etc/hostapd/hostapd.conf' ]; then
@@ -182,8 +188,8 @@ if [ -f '/etc/hostapd/hostapd.conf' ]; then
 	_IWDEVINFO=`/sbin/iw dev "$HOSTAPINTERFACE" info`
 	HOSTAPCHANNEL=`sed -n 's|^.*channel \([0-9]\+\) .*$|\1|p' <<< "$_IWDEVINFO"`
 	HOSTAPBSSID=`sed -n 's|^.*addr \([0-9a-f:]\+\)$|\1|p' <<< "$_IWDEVINFO"`
-	# Uppercase Host AP BSSID
-	HOSTAPBSSID="${HOSTAPBSSID^^}"
+	# Lowercase Host AP BSSID
+	HOSTAPBSSID="${HOSTAPBSSID,,}"
 	HOSTAPTXPOWER=`sed -n 's|.*txpower \([0-9.]*\) dBm$|\1|p' <<< "$_IWDEVINFO"`
 fi
 
@@ -238,6 +244,10 @@ storeState()
 	#$DEBUGLOGGING && logMessage "$STATE"
 	[ -z "$STATE" ] &&
 		return
+
+	[ -z "$STATEFILE" ] &&
+		logError 'No status file configured' &&
+		return 1
 
 	if [ ! -f "$STATEFILE" ]; then
 		touch "$STATEFILE" &&
@@ -426,8 +436,66 @@ getBody()
 	fi
 }
 
+# Checks if we have a working internet connection
+isOnline()
+{
+	getWiFiStatus
+	getNetworkStatus
+
+	if ! $INTERFACEISUP; then
+		$VERBOSELOGGING && logError 'Interface is not up'
+		return 1
+	fi
+
+	if $ISWIFIINTERFACE && [ -z "$BSSID" ]; then
+		$VERBOSELOGGING && logError 'Not connected to a WiFi'
+		return 1
+	fi
+
+	if [ -z "$IPADDRESS" ]; then
+		$VERBOSELOGGING && logError 'No IP address'
+		return 1
+	fi
+
+	# Check if we have a default route
+	if ! route -n | grep -q "^0\.0\.0\.0 .* $INTERFACE$"; then
+	#if ! route -n | grep -q '^0\.0\.0\.0'; then
+		$VERBOSELOGGING && logError 'No default route'
+		return 2
+	fi
+	$DEBUGLOGGING && logMessage 'Default route exists'
+
+	# Check if we have a working DNS server
+	if host -t A -W $TIMEOUT "$CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+		$VERBOSELOGGING && logError 'DNS not working'
+		return 3
+	fi
+	$DEBUGLOGGING && logMessage 'DNS is working'
+
+	# Check if we can ping the Google DNS server
+	#! ping -q -c 1 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1 &&
+	#	return 4
+
+	# Check if we have a Captive Portal
+	if ! curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL" | grep -q "$CAPTIVEPORTALDETECTIONRESPONSE"; then
+		$VERBOSELOGGING && logError 'Captive Portal present'
+		return 5
+	fi
+	$DEBUGLOGGING && logMessage 'No Captive Portal present'
+
+	# All the checks are past, we seem to be online
+	$VERBOSELOGGING && logMessage "We're online"
+	return 0
+}
+
 # Captive Portal functions
 # https://en.wikipedia.org/wiki/Captive_portal
+
+# Initialise Captive Portal variables
+SCRIPTNAME="$LIBPATH/captiveportal"
+. "$SCRIPTNAME"
+SCRIPTNAME="$0"
+
 # Returns 0 when Captive Portal is present else 1
 isCaptivePortalPresent()
 {
@@ -469,6 +537,43 @@ solveCaptivePortal()
 # WiFi functions
 [ -z "$WIGLEAPINAME" ] && WIGLEAPINAME=`getConfigValue 'WIGLEAPINAME'`
 [ -z "$WIGLEAPITOKEN" ] && WIGLEAPITOKEN=`getConfigValue 'WIGLEAPITOKEN'`
+
+setInterface() {
+	if ! IFCONFIG=`ifconfig "$1" 2> /dev/null`; then
+		logError "Interface $1 does not exist"
+		exit 1
+	fi
+
+	INTERFACE="$1"
+	$ROOT &&
+		STATEFILE="/var/run/WLANderlust.$INTERFACE.state" ||
+		STATEFILE=~/".WLANderlust.$INTERFACE.state"
+
+	grep -q '<UP' <<< "$IFCONFIG" &&
+		INTERFACEISUP='true' ||
+		INTERFACEISUP='false'
+	$DEBUGLOGGING && $INTERFACEISUP && logMessage "Interface $INTERFACE is up"
+	$DEBUGLOGGING && ! $INTERFACEISUP && logMessage "Interface $INTERFACE is down"
+
+	ISWIFIINTERFACE='false'
+	[ "`uname`" = 'Linux' ] && grep -q '^wlan[0-9]*$' <<< "$INTERFACE" && ISWIFIINTERFACE='true'
+	[ "`uname`" = 'Darwin' ]  &&
+		networksetup -listallhardwareports | grep -B 1 "^Device: $INTERFACE" | grep -q "Hardware Port: Wi-Fi" &&
+		ISWIFIINTERFACE='true'
+	$VERBOSELOGGING && $ISWIFIINTERFACE && logMessage "Using WiFi interface $INTERFACE"
+	$VERBOSELOGGING && ! $ISWIFIINTERFACE && logMessage "Using non-WiFi interface $INTERFACE"
+	IPADDRESS=`ifconfig "$INTERFACE" | sed -n 's|.*inet \([^ ]*\) .*|\1|p'`
+
+	if $ISWIFIINTERFACE && [ "`uname`" = 'Linux' ]; then
+		ISROAMING='false'
+		if [ -f "/etc/network/interfaces.d/$INTERFACE" ]; then
+			WPASUPPLICANTCONF=`sed -n 's/^\swpa-\(conf\|roam\) \(.*\)/\2/p' "/etc/network/interfaces.d/$INTERFACE"`
+			# Are we in roaming mode?
+			grep -q '^\swpa-roam ' "/etc/network/interfaces.d/$INTERFACE" && ISROAMING='true'
+		fi
+	fi
+}
+
 getWiFiStatus()
 {
 	PREVIOUSBSSID=`getState 'BSSID'`
@@ -479,7 +584,7 @@ getWiFiStatus()
 		INTERFACEISUP='false'
 
 	#ToDo make this portable
-	if $INTERFACEISUP && $ISWIFIINTERFACE && [ "`uname`" = 'Linux' ]  &&
+	if $INTERFACEISUP && $ISWIFIINTERFACE && [ "`uname`" = 'Linux' ] &&
 		[ -x '/sbin/wpa_cli' ] && WPASTATUS=`/sbin/wpa_cli -i "$INTERFACE" status 2> /dev/null`; then
 		setState 'BSSID' `sed -n 's|^bssid=\(.*\)$|\1|p' <<< "$WPASTATUS"`
 		setState 'SSID' `sed -n 's|^ssid=\(.*\)$|\1|p' <<< "$WPASTATUS"`
@@ -490,13 +595,6 @@ getWiFiStatus()
 			CHANNEL=`/sbin/iw dev $INTERFACE info | sed -n 's|^.*channel \([0-9]\+\) .*$|\1|p'`
 			# Get the signal strength of the current connection
 			SIGNALSTRENGTH=`/sbin/iw dev $INTERFACE link | sed -n 's|^.*signal: \(.*\) dBm|\1|p'`
-		fi
-
-		ISROAMING='false'
-		if [ -f "/etc/network/interfaces.d/$INTERFACE" ]; then
-			WPASUPPLICANTCONF=`sed -n 's/^\swpa-\(conf\|roam\) \(.*\)/\2/p' "/etc/network/interfaces.d/$INTERFACE"`
-			# Are we in roaming mode?
-			grep -q '^\swpa-roam ' "/etc/network/interfaces.d/$INTERFACE" && ISROAMING='true'
 		fi
 	elif $INTERFACEISUP && $ISWIFIINTERFACE && [ "`uname`" = 'Darwin' ]; then
 		_AIRPORT=`/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport en0 -I`
@@ -521,7 +619,7 @@ getWiFiStatus()
 	#_YANDEXRESPONSE=`curl "http://mobile.maps.yandex.net/cellid_location/?clid=1866854&lac=-1&cellid=-1&operatorid=null&countrycode=null&signalstrength=-1&wifinetworks=$_ESCAPEDBSSID:-55&app=ymetro"`
 	#_OPENWIFIRESPONSE=`curl "http://openwifi.su/api/v1/bssids/$_ESCAPEDBSSID"`
 	
-	storeState
+	#storeState
 }
 
 stopDHClient()
@@ -570,7 +668,7 @@ getNetworkStatus()
 		setState 'GATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $INTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
 	fi
 
-	storeState
+	#storeState
 }
 
 scanForNetworks()
@@ -592,8 +690,8 @@ scanForNetworks()
 		done
 		BSSIDS=`sed -n 's|.* - Address: \([0-9A-F:]*\)|\1|p' <<< "$IWLISTSCAN"`
 	fi
-	# Uppercase BSSIDs
-	BSSIDS="${BSSIDS^^}"
+	# Lowercase BSSIDs
+	BSSIDS="${BSSIDS,,}"
 	# Remove Host AP BSSID
 	BSSIDS=`grep -v "$HOSTAPBSSID" <<< "$BSSIDS"`
 
@@ -611,20 +709,92 @@ reassociateInterface()
 {
 	! $ISWIFIINTERFACE &&
 		return 1
-	[ "$WPASTATE" != 'COMPLETED' ] &&
-		return 1
-	[ -n "$EXTERNALIPADDRESS" ] &&
-		return 1
-	# Don't reassociate when last time was less then 2 minutes ago
-	LASTREASSOCIATED=`getState 'LASTREASSOCIATED'`
-	[ -n "$LASTREASSOCIATED" ] && [ $LASTREASSOCIATED -gt $((`date +%s` - 120)) ] &&
-		return 1
-	setState 'LASTREASSOCIATED' `date +%s`
-	storeState
+	#[ "$WPASTATE" != 'COMPLETED' ] &&
+	#	return 1
+	#[ -n "$EXTERNALIPADDRESS" ] &&
+	#	return 1
 
 	logMessage 'Reassociating...'
 	! $ISROAMING && stopDHClient
-	wpa_cli -i "$INTERFACE" reassociate > /dev/null 2>&1
+	#wpa_cli -i "$INTERFACE" reassociate > /dev/null 2>&1
+
+	_WAITFORCONNECTION=10
+
+	# Sort WiFis by signal strength
+	#_WIFIS=`sort --field-separator=';' -k 3nr /var/run/WLANderlust.$INTERFACE.wifis`
+	mapfile -t _WIFIS < <(grep -v ';$' /var/run/WLANderlust.$INTERFACE.wifis | sort --field-separator=';' -k 3nr)
+	_WPANETWORKS=`wpa_cli -i "$INTERFACE" list_networks`
+
+	# Check if we know any of the WiFis or any of the WiFis is unencrypted and try to connect to them
+	_IGNOREBSSIDS=''
+	_LASTTRY=''
+	for I in ${!_WIFIS[@]}; do
+		_WIFI=${_WIFIS[$I]}
+		#BSSID;CHANNEL;SIGNAL;ENCRYPTION;_LOCATION;ESSID
+		_BSSID=`sed 's|^\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+		#_CHANNEL=`sed 's|^[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+		#_SIGNAL=`sed 's|^[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+		#_LOCATION=`sed 's|^[^;]*;[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+		_ENCRYPTION=`sed 's|^[^;]*;[^;]*;[^;]*;\([^;]*\);.*$|\1|' <<< "$_WIFI"`
+		_SSID=`sed 's|^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;\(.*\)$|\1|' <<< "$_WIFI"`
+
+		if _NETWORKID=`sed -n "s|^\([0-9]*\)\t[^\t]*\t$_BSSID\t.*|\1|p" <<< "$_WPANETWORKS"` && [ -z "$_NETWORKID" ]; then
+			if [ -n "$_SSID" ]; then
+				_NETWORKID=`sed -n "s|^\([0-9]*\)\t$_SSID\tany\t.*|\1|p" <<< "$_WPANETWORKS"` && [ -n "$_NETWORKID" ]
+			fi
+		fi
+
+		getWiFiStatus
+		if [ "$_BSSID" = "$BSSID" ]; then
+			logMessage "Already connected to $_SSID ($_BSSID)"
+			continue
+		fi
+
+		if [ -n "$_NETWORKID" ]; then
+			logMessage "Connecting to $_SSID ($_BSSID)"
+			wpa_cli -i "$INTERFACE" disconnect
+			wpa_cli -i "$INTERFACE" enable "$_NETWORKID"
+			wpa_cli -i "$INTERFACE" select_network "$_NETWORKID"
+			wpa_cli -i "$INTERFACE" reconnect
+			sleep 1
+			getWiFiStatus
+		elif [ "$_ENCRYPTION" = "None" ]; then
+			logMessage "Connecting to $_SSID ($_BSSID)"
+			wpa_cli -i "$INTERFACE" enable 0
+			iw dev "$INTERFACE" disconnect
+			_OUTPUT=`timeout 10 iw dev "$INTERFACE" connect -w "$_SSID" "$_BSSID" 2> /dev/null` ||
+				continue
+			if ! grep -q ": connected to $_BSSID" <<< "$_OUTPUT"; then
+				$DEBUGLOGGING && logError "Failed to connect to $_SSID ($_BSSID)"
+				$DEBUGLOGGING && logError "$_OUTPUT"
+				#$_IGNOREBSSIDS+=
+				continue
+			fi
+			sleep 1
+			getWiFiStatus
+		else
+			continue
+		fi
+		logMessage "Connected to $_SSID ($_BSSID)"
+
+		#if timeout $_WAITFORCONNECTION sh -c 'while ! isOnline; do sleep 1; done'; then
+		sleep $_WAITFORCONNECTION
+		while [ -e "/var/run/WLANderlust.$INTERFACE.pid" ]; do
+			sleep 1
+		done
+		isOnline
+		case $? in
+			0)
+				logMessage "Connected to $_SSID ($_BSSID)"
+				logMessage "We're online"
+				break
+				;;
+			*)
+				$DEBUGLOGGING && logError "Failed to get an internet connection from $_SSID ($_BSSID)"
+				;;
+		esac
+	done
+
 	! $ISROAMING && startDHClient
 }
 
@@ -708,32 +878,34 @@ editwpa_supplicant()
 configureWiFi()
 {
 	_SSID="$1"
-	SSIDINFO="$2"
+	_BSSID="$2"
+	_ENCRYPTION="$3"
 
 	# Check if this network is already in wpa_supplicant
-	ISINWPASUPPLICANT=`/bin/grep -q "^[^#]\s*\bssid=\"$SSID\"" "$WPASUPPLICANTCONF" && echo 'true' || echo 'false'`
-	if $ISINWPASUPPLICANT; then
-		OLDWIFICONFIG=`sudo fgrep -B 2 -A 3 -x "^[^#]\s*\bssid=\"$SSID\"" "$WPASUPPLICANTCONF"`
+	#ISINWPASUPPLICANT=`/bin/grep -q "^[^#]\s*\bssid=\"$SSID\"" "$WPASUPPLICANTCONF" && echo 'true' || echo 'false'`
+	#if $ISINWPASUPPLICANT; then
+	#	OLDWIFICONFIG=`sudo fgrep -B 2 -A 3 -x "^[^#]\s*\bssid=\"$SSID\"" "$WPASUPPLICANTCONF"`
 
-		echo 'SSID already configured:'
-		echo "$OLDWIFICONFIG"
-		echo
-		echo 'Connect/Replace/Delete/Quit? (C/R/D/Q)'
-	else
-		echo 'Connect/Add/Quit? (C/Q)'
-	fi
+	#	echo 'SSID already configured:'
+	#	echo "$OLDWIFICONFIG"
+	#	echo
+	#	echo 'Connect/Replace/Delete/Quit? (C/R/D/Q)'
+	#else
+	#	echo 'Connect/Add/Quit? (C/Q)'
+	#fi
 
-	read -r -n 1 CHOICE
-	case "$CHOICE" in
-		C|c)
-			iw dev wlan1 connect -w "$SSID"
-		;;
-		D|d)
-			logError 'Delete configuration not yet implemented'
-			return 1
-		;;
-		Q|q) return 1 ;;
-	esac
+	#read -r -n 1 CHOICE
+	#case "$CHOICE" in
+	#	C|c)
+	#		iw dev "$INTERFACE" disconnect
+	#		iw dev "$INTERFACE" connect -w "$SSID" "$_BSSID"
+	#	;;
+	#	D|d)
+	#		logError 'Delete configuration not yet implemented'
+	#		return 1
+	#	;;
+	#	Q|q) return 1 ;;
+	#esac
 
 	if [ ! -z "$_SSID" ]; then
 		if [ -z "$SSIDINFO" ]; then
@@ -750,14 +922,14 @@ configureWiFi()
 
 		if [ ! -z "$PASSWORD" ]; then
 			WIFICONFIG="network={
-	#bssid=$BSSID
+	#bssid=$_BSSID
 	ssid=\"$_SSID\"
 	psk=\"$PASSWORD\"
 	priority=50
 }"
 		else
 			WIFICONFIG="network={
-	#bssid=$BSSID
+	#bssid=$_BSSID
 	ssid=\"$_SSID\"
 	key_mgmt=NONE
 	priority=50
@@ -766,13 +938,13 @@ configureWiFi()
 
 		# Check if this network is already in wpa_supplicant
 		#if ! /bin/fgrep -q -x "	ssid=\"$_SSID\"" "$WPASUPPLICANTCONF"; then
-		if ! /bin/grep -q "^\s*ssid=\"$_SSID\"" "$WPASUPPLICANTCONF"; then
+		#if ! /bin/grep -q "^\s*ssid=\"$_SSID\"" "$WPASUPPLICANTCONF"; then
 			while true; do
 				echo 'Configuration:'
 				echo "$WIFICONFIG"
 				echo
-				echo 'Save? (Y/n/e)'
-				read -r -n 1 CHOICE
+				read -r -n 1 -p 'Save? (Y/n/e) ' CHOICE
+				echo
 				case "$CHOICE" in
 					''|Y|y)
 						echo -e "\n# Added on `date` by WLANderlust" >> "$WPASUPPLICANTCONF"
@@ -802,23 +974,23 @@ configureWiFi()
 						;;
 				esac
 			done
-		else
-			echo 'New configuration:'
-			echo "$WIFICONFIG"
-			echo
-			echo 'Save? (y/N)'
-			read -n 1 CHOICE
-			case "$CHOICE" in
-				Y|y)
-					logError 'Replace configuration not yet implemented'
-					return 1
-					;;
-				*)
-					logError 'New configuration not stored'
-					return 1
-					;;
-			esac
-		fi
+		#else
+		#	echo 'New configuration:'
+		#	echo "$WIFICONFIG"
+		#	echo
+		#	echo 'Save? (y/N)'
+		#	read -n 1 CHOICE
+		#	case "$CHOICE" in
+		#		Y|y)
+		#			logError 'Replace configuration not yet implemented'
+		#			return 1
+		#			;;
+		#		*)
+		#			logError 'New configuration not stored'
+		#			return 1
+		#			;;
+		#	esac
+		#fi
 	fi
 
 	return 1

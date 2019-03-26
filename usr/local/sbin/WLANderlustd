@@ -209,8 +209,9 @@ wifiScanThread()
 				#fi
 			fi
 
-			[ -f /etc/WLANderlust/BSSID.location.cache ] && 
-				_LOCATION=`sed -n "s|^$BSSID;\(.*\)|\1|p" /etc/WLANderlust/BSSID.location.cache`
+			_LOCATION=''
+			[ -f "$CONFIGPATH/BSSID.location.cache" ] && 
+				_LOCATION=`sed -n "s|^$BSSID;\(.*\)|\1|p" "$CONFIGPATH/BSSID.location.cache"`
 
 			if [ -z "$_LOCATION" ] && [ -e /var/run/isonline ]; then
 				(
@@ -224,7 +225,7 @@ wifiScanThread()
 				fi
 
 				[ -n "$_LOCATION" ] &&
-					echo "$BSSID;$_LOCATION" >> /etc/WLANderlust/BSSID.location.cache
+					echo "$BSSID;$_LOCATION" >> "$CONFIGPATH/BSSID.location.cache"
 				) &
 			fi
 
@@ -269,67 +270,71 @@ gpsThread()
 }
 
 rm -f /var/run/isonline
+rm -f /var/run/isoffline
 isOnlineThread()
 {
 	while true; do
-		getWiFiStatus
-		$DEBUGLOGGING && logMessage "WAITTIME=$_WAITTIME"
-		if $ISWIFIINTERFACE && $AUTOREASSOCIATE && [ -n "$_ONLINESTATEISKNOWN" ]; then
-			if [ -e /var/run/ismoving ]; then
-				$VERBOSELOGGING && logError "We're moving"
-				sleep $_WAITTIME
-			elif [ ! -s /var/run/WLANderlust.$INTERFACE.wifis ]; then
-				$VERBOSELOGGING && logError "No WiFis available for interface $INTERFACE"
-				sleep $_WAITTIME
-			elif [ -e "/var/run/WLANderlust.$INTERFACE.pid" ]; then
-				$VERBOSELOGGING && logError "CLI is active for interface $INTERFACE"
-				sleep $_WAITTIME
-			elif [ -n "$_LASTREASSOCIATED" ] && [ $_LASTREASSOCIATED -gt $((`date +%s` - $REASSOCIATEINTERVAL)) ]; then
-				$DEBUGLOGGING && logMessage "Last reassociation less than $REASSOCIATEINTERVAL seconds ago"
-				sleep $_WAITTIME
-			else
-				reassociateInterface
-				_LASTREASSOCIATED=`date +%s`
-			fi
-		elif [ -n "$_WAITTIME" ]; then
-			sleep $_WAITTIME
-		fi
-		_ONLINESTATEISKNOWN='true'
-
 		isOnline
 		case $? in
 			0)
 				# All the checks are past, we seem to be online
 				$VERBOSELOGGING && logMessage "We're online"
-				touch /var/run/isonline
-				;;
-			2) # No deafult route
-				_WAITTIME=0.5
-				continue
-				;;
-			3) # DNS not working
-				_WAITTIME=2
-				continue
-				;;
-			5) # Captive Portal present
-				_WAITTIME=5
-				continue
+				rm -f /var/run/isoffline
+				[ ! -e /var/run/isonline ] &&
+					echo date +%s > /var/run/isonline
+
+				# Check if we can ping the Google DNS server
+				while ping -I "$INTERFACE" -q -c 2 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1; do
+					#ToDo Do Captive Portal check every N seconds
+					sleep 1
+				done
+
+				$VERBOSELOGGING && logError "We're offline"
+				rm /var/run/isonline
+				echo date +%s > /var/run/isoffline
+				WAITTIME=0
 				;;
 			*)
-				_WAITTIME=1
-				continue
+				$DEBUGLOGGING && logError "We're offline"
+				rm -f /var/run/isonline
+				[ ! -e /var/run/isoffline ] &&
+					echo date +%s > /var/run/isoffline
 				;;
 		esac
 
-		# Check if we can ping the Google DNS server
-		while ping -I "$INTERFACE" -q -c 2 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1; do
-			#ToDo Do Captive Portal check every N seconds
-			sleep 1
-		done
+		if $ISWIFIINTERFACE && $AUTOREASSOCIATE; then
+			if [ -e /var/run/ismoving ]; then
+				$VERBOSELOGGING && logError "We're moving"
+			elif [ ! -s /var/run/WLANderlust.$INTERFACE.wifis ]; then
+				$VERBOSELOGGING && logError "No WiFis available for interface $INTERFACE"
+			elif [ -e "/var/run/WLANderlust.$INTERFACE.pid" ]; then
+				$VERBOSELOGGING && logError "CLI is active for interface $INTERFACE"
+			elif [ -n "$_LASTREASSOCIATED" ] && [ $_LASTREASSOCIATED -gt $((`date +%s` - $REASSOCIATEINTERVAL)) ]; then
+				$DEBUGLOGGING && logMessage "Last reassociation less than $REASSOCIATEINTERVAL seconds ago"
+			else
+				reassociateInterface
+				case $? in
+					0) # Successfully connected to a WiFi
+						$VERBOSELOGGING && logMessage "We're succesfully reassociated"
+						rm -f /var/run/isoffline
+						echo date +%s > /var/run/isonline
+						WAITTIME=0
+						;;
+					1) # One or more WiFis were tried but none were succesfull
+						$DEBUGLOGGING && logError "Failed to reassociat to any of the available WiFi's"
+						WAITTIME=2
+						;;
+					2) # No WiFis were tried
+						$DEBUGLOGGING && logError "No WiFi's available to try to connect to"
+						WAITTIME=5
+						;;
+				esac
+				_LASTREASSOCIATED=`date +%s`
+			fi
+		fi
 
-		$VERBOSELOGGING && logError "We're offline"
-		rm /var/run/isonline
-		_WAITTIME=0
+		$DEBUGLOGGING && logMessage "WAITTIME=$WAITTIME"
+		sleep $WAITTIME
 	done
 }
 
@@ -345,7 +350,7 @@ terminate()
 		/bin/kill -TERM $WIFISCANPID
 	[ -n "$GPSPID" ] &&
 		/bin/kill -TERM $GPSPID
-	[ -n "$$ISONLINEPID" ] &&
+	[ -n "$ISONLINEPID" ] &&
 		/bin/kill -TERM $ISONLINEPID
 
 	# Remove the PID file
@@ -385,10 +390,10 @@ if $FOREGROUND; then
 	trap interrupt SIGINT
 
 	echo $$ > "$DAEMONPIDFILE"
-	$DEBUGLOGGING && cat "$DAEMONPIDFILE"
+	$DEBUGLOGGING && logMessage "WLANderlust daemon PID: "`cat "$DAEMONPIDFILE"`
 	WLANderlustd
 else
 	WLANderlustd &
 	echo "$!" > "$DAEMONPIDFILE"
-	$DEBUGLOGGING && cat "$DAEMONPIDFILE"
+	$DEBUGLOGGING && logMessage "WLANderlust daemon PID: "`cat "$DAEMONPIDFILE"`
 fi

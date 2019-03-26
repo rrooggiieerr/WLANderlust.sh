@@ -235,7 +235,7 @@ setState()
 		STATE+="
 $1='${@:2}'"
 	fi
-	#ToDo Probably need to do some escapeing here too
+	#ToDo Probably need to do some escaping here too
 	eval "$1='${@:2}'"
 }
 
@@ -301,8 +301,8 @@ expandLocation()
 	fi
 }
 
-# Tries to fiend a location redirect in a given HTML + headers.
-# First it ries toe fiend a Location header
+# Tries to find a location redirect in a given HTML + headers.
+# First it tries to find a Location header
 # Then a refresh meta tag
 # Then a window.location string, this is very crude
 getLocationHeader()
@@ -444,44 +444,58 @@ isOnline()
 
 	if ! $INTERFACEISUP; then
 		$VERBOSELOGGING && logError 'Interface is not up'
+		WAITTIME=1
 		return 1
 	fi
+	$DEBUGLOGGING && logMessage 'Interface is up'
 
-	if $ISWIFIINTERFACE && [ -z "$BSSID" ]; then
-		$VERBOSELOGGING && logError 'Not connected to a WiFi'
-		return 1
+	if $ISWIFIINTERFACE; then
+		if [ -z "$BSSID" ]; then
+			$VERBOSELOGGING && logError 'Not connected to a WiFi'
+			WAITTIME=2
+			return 2
+		fi
+		$DEBUGLOGGING && logMessage 'Connected to a WiFi'
 	fi
 
 	if [ -z "$IPADDRESS" ]; then
-		$VERBOSELOGGING && logError 'No IP address'
-		return 1
+		$VERBOSELOGGING && logError 'No IP address assigned'
+		WAITTIME=2
+		return 3
 	fi
+	$DEBUGLOGGING && logMessage 'IP address assigned'
 
 	# Check if we have a default route
 	if ! route -n | grep -q "^0\.0\.0\.0 .* $INTERFACE$"; then
-	#if ! route -n | grep -q '^0\.0\.0\.0'; then
 		$VERBOSELOGGING && logError 'No default route'
-		return 2
+		WAITTIME=0.5
+		return 4
 	fi
 	$DEBUGLOGGING && logMessage 'Default route exists'
 
 	# Check if we have a working DNS server
-	if host -t A -W $TIMEOUT "$CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
+	if ! host -t A -W $TIMEOUT "$CAPTIVEPORTALDETECTIONHOSTNAME" > /dev/null; then
 		$VERBOSELOGGING && logError 'DNS not working'
-		return 3
+		WAITTIME=2
+		return 5
 	fi
 	$DEBUGLOGGING && logMessage 'DNS is working'
-
-	# Check if we can ping the Google DNS server
-	#! ping -q -c 1 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1 &&
-	#	return 4
 
 	# Check if we have a Captive Portal
 	if ! curl -4 --interface "$INTERFACE" -m "$TIMEOUT" -s -i "$CAPTIVEPORTALDETECTIONURL" | grep -q "$CAPTIVEPORTALDETECTIONRESPONSE"; then
 		$VERBOSELOGGING && logError 'Captive Portal present'
-		return 5
+		WAITTIME=5
+		return 6
 	fi
 	$DEBUGLOGGING && logMessage 'No Captive Portal present'
+
+	# Check if we can ping the Google DNS server
+	if ! ping -q -c 2 -W $TIMEOUT 8.8.8.8 > /dev/null 2>&1; then
+		$VERBOSELOGGING && logError "Can't ping Google DNS server"
+		WAITTIME=2
+		return 7
+	fi
+	$DEBUGLOGGING && logMessage 'Can ping Google DNS server'
 
 	# All the checks are past, we seem to be online
 	$VERBOSELOGGING && logMessage "We're online"
@@ -609,32 +623,19 @@ getWiFiStatus()
 		setState 'WPASTATE' ''
 	fi
 
-	#ToDo Calculate distance to Access Point
+	# Calculate distance to Access Point
 	# https://www.linuxjournal.com/magazine/work-shell-calculating-distance-between-two-latitudelongitude-points
-	#if [ -n "$WIGLEAPINAME" ] && [ -n "$WIGLEAPITOKEN" ] && [ -n "$BSSID" ]; then
-	#	_ESCAPEDBSSID=`sed 's|:|%3A|g' <<< "$BSSID"`
-	#	_WIGLERESPONSE=`curl -4 -m 5 -s -i -H 'Accept:application/json' -u "$WIGLEAPINAME:$WIGLEAPITOKEN" "https://api.wigle.net/api/v2/network/detail?netid=$_ESCAPEDBSSID"`
-	#fi
-	#_ESCAPEDBSSID=`sed 's|:||g' <<< "$BSSID"`
-	#_YANDEXRESPONSE=`curl "http://mobile.maps.yandex.net/cellid_location/?clid=1866854&lac=-1&cellid=-1&operatorid=null&countrycode=null&signalstrength=-1&wifinetworks=$_ESCAPEDBSSID:-55&app=ymetro"`
-	#_OPENWIFIRESPONSE=`curl "http://openwifi.su/api/v1/bssids/$_ESCAPEDBSSID"`
-	
-	#storeState
-}
-
-stopDHClient()
-{
-	if [ -f "/run/dhclient.$INTERFACE.pid" ]; then
-		/sbin/dhclient -x -pf "/run/dhclient.$INTERFACE.pid" > /dev/null 2>&1
+	_LOCATION=''
+	[ -f "$CONFIGPATH/BSSID.location.cache" ] &&
+		_LOCATION=`sed -n "s|^$BSSID;\(.*\)|\1|p" "$CONFIGPATH/BSSID.location.cache"`
+	BSSIDDISTANCE=''
+	if [ -n "$_LOCATION" ]; then
+		_LATITUDE=`sed 's|,.*||' <<< "$_LOCATION"`
+		_LONGITUDE=`sed 's|.*,||' <<< "$_LOCATION"`
+		#ToDo Calculate distance to Access Point
+		# https://www.linuxjournal.com/magazine/work-shell-calculating-distance-between-two-latitudelongitude-points
+		BSSIDDISTANCE=''
 	fi
-	killall dhclient > /dev/null 2>&1
-	rm "/var/lib/dhcp/dhclient.$INTERFACE.leases" > /dev/null 2>&1
-	rm "/var/lib/dhcp/dhclient6.$INTERFACE.leases" > /dev/null 2>&1
-}
-
-startDHClient()
-{
-	/sbin/dhclient -nw -4 -v -pf "/run/dhclient.$INTERFACE.pid" -lf "/var/lib/dhcp/dhclient.$INTERFACE.leases" -I -df "/var/lib/dhcp/dhclient6.$INTERFACE.leases" "$INTERFACE" > /dev/null 2>&1
 }
 
 getNetworkStatus()
@@ -667,8 +668,6 @@ getNetworkStatus()
 		setState 'NETMASK' `sed -n 's|.*netmask \([^ ]*\) .*|\1|p' <<< "$IFCONFIG"`
 		setState 'GATEWAY' `route -n | sed -n "s|[0-9.]* *\([0-9.]*\) .* $INTERFACE|\1|p" | grep -v "0\.0\.0\.0" | uniq`
 	fi
-
-	#storeState
 }
 
 scanForNetworks()
@@ -709,14 +708,8 @@ reassociateInterface()
 {
 	! $ISWIFIINTERFACE &&
 		return 1
-	#[ "$WPASTATE" != 'COMPLETED' ] &&
-	#	return 1
-	#[ -n "$EXTERNALIPADDRESS" ] &&
-	#	return 1
 
 	logMessage 'Reassociating...'
-	! $ISROAMING && stopDHClient
-	#wpa_cli -i "$INTERFACE" reassociate > /dev/null 2>&1
 
 	_WAITFORCONNECTION=10
 
@@ -726,8 +719,7 @@ reassociateInterface()
 	_WPANETWORKS=`wpa_cli -i "$INTERFACE" list_networks`
 
 	# Check if we know any of the WiFis or any of the WiFis is unencrypted and try to connect to them
-	_IGNOREBSSIDS=''
-	_LASTTRY=''
+	_NTRIES=0
 	for I in ${!_WIFIS[@]}; do
 		_WIFI=${_WIFIS[$I]}
 		#BSSID;CHANNEL;SIGNAL;ENCRYPTION;_LOCATION;ESSID
@@ -747,10 +739,8 @@ reassociateInterface()
 		getWiFiStatus
 		if [ "$_BSSID" = "$BSSID" ]; then
 			logMessage "Already connected to $_SSID ($_BSSID)"
-			continue
-		fi
-
-		if [ -n "$_NETWORKID" ]; then
+		elif [ -n "$_NETWORKID" ]; then
+			_NTRIES=$(($_NTRIES + 1))
 			logMessage "Connecting to $_SSID ($_BSSID)"
 			wpa_cli -i "$INTERFACE" disconnect
 			wpa_cli -i "$INTERFACE" enable "$_NETWORKID"
@@ -758,44 +748,57 @@ reassociateInterface()
 			wpa_cli -i "$INTERFACE" reconnect
 			sleep 1
 			getWiFiStatus
+			if [ "$_BSSID" = "$BSSID" ]; then
+				logMessage "Connected to $SSID ($BSSID)"
+			else
+				$VERBOSELOGGING && logError "Failed to connect to $_SSID ($_BSSID)"
+				continue
+			fi
 		elif [ "$_ENCRYPTION" = "None" ]; then
+			_NTRIES=$(($_NTRIES + 1))
 			logMessage "Connecting to $_SSID ($_BSSID)"
 			wpa_cli -i "$INTERFACE" enable 0
 			iw dev "$INTERFACE" disconnect
 			_OUTPUT=`timeout 10 iw dev "$INTERFACE" connect -w "$_SSID" "$_BSSID" 2> /dev/null` ||
 				continue
 			if ! grep -q ": connected to $_BSSID" <<< "$_OUTPUT"; then
-				$DEBUGLOGGING && logError "Failed to connect to $_SSID ($_BSSID)"
+				$VERBOSELOGGING && logError "Failed to connect to $_SSID ($_BSSID)"
 				$DEBUGLOGGING && logError "$_OUTPUT"
-				#$_IGNOREBSSIDS+=
 				continue
 			fi
 			sleep 1
 			getWiFiStatus
+			if [ "$_BSSID" = "$BSSID" ]; then
+				logMessage "Connected to $SSID ($BSSID)"
+			else
+				$VERBOSELOGGING && logError "Failed to connect to $_SSID ($_BSSID)"
+				continue
+			fi
 		else
+			$DEBUGLOGGING && logError "$_SSID ($_BSSID) does not qualify to reassociate to"
 			continue
 		fi
-		logMessage "Connected to $_SSID ($_BSSID)"
 
-		#if timeout $_WAITFORCONNECTION sh -c 'while ! isOnline; do sleep 1; done'; then
+		#if timeout $_WAITFORCONNECTION sh -c 'while ! isOnline; do sleep $WAITTIME; done'; then
 		sleep $_WAITFORCONNECTION
-		while [ -e "/var/run/WLANderlust.$INTERFACE.pid" ]; do
-			sleep 1
-		done
 		isOnline
 		case $? in
 			0)
-				logMessage "Connected to $_SSID ($_BSSID)"
+				logMessage "Connected to $SSID ($BSSID)"
 				logMessage "We're online"
-				break
+
+				return 0
 				;;
 			*)
-				$DEBUGLOGGING && logError "Failed to get an internet connection from $_SSID ($_BSSID)"
+				$DEBUGLOGGING && logError "Failed to get a working internet connection from $SSID ($BSSID)"
 				;;
 		esac
 	done
 
-	! $ISROAMING && startDHClient
+	$DEBUGLOGGING && logMessage "NTRIES=$_NTRIES"
+	[ $_NTRIES -eq 0 ] &&
+		return 2
+	return 1
 }
 
 append2WPAsupplicant()
@@ -951,10 +954,8 @@ configureWiFi()
 						echo "$WIFICONFIG" >> "$WPASUPPLICANTCONF"
 						logMessage 'Configuration stored'
 
-						$ROAMING || stopDHClient
 						# Reload the wpa_supplicant configuration
 						wpa_cli -i $INTERFACE reconfigure > /dev/null
-						$ROAMING || startDHClient
 						return 0
 						;;
 					E|e)
